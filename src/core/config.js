@@ -67,11 +67,15 @@ export const DEFAULTS = {
   titleFilter: { enabled: true, groups: [], title: '大肥鱼' },
   voice: {
     enabled: true,
-    // auto = 先 edge-tts，不行用 Windows 语音；edge / windows / cosyvoice / gptsovits / http = 指定引擎（失败都会退回 Windows 语音）
+    // auto = 先 edge-tts，不行用 Windows 语音；edge / windows / cosyvoice / gptsovits / http / openai = 指定引擎
+    // （本地 / 自建引擎失败会先退回 edge-tts，edge 也没有才退回 Windows 语音）
     engine: 'auto',
     cosyvoice: { url: 'http://127.0.0.1:50000', mode: 'sft', spkId: '中文女', instruct: '', sampleRate: 22050 },
     gptsovits: { url: 'http://127.0.0.1:9880', refAudio: '', promptText: '', promptLang: 'zh', textLang: 'zh' },
     http: { urlTemplate: '' }, // 通用：GET 这个地址（{text} 会替换成要念的话），返回音频
+    // OpenAI 兼容 TTS：POST {baseUrl}/audio/speech（body：model / input / voice / response_format / speed?）
+    // 本机的 say-sing-drawPlugin 网关就是这套协议：baseUrl 填 http://127.0.0.1:8899/v1，apiKey 填网关令牌
+    openai: { baseUrl: '', apiKey: '', model: '', voice: '', format: 'mp3', speed: 1, timeoutMs: 120000, sampleRate: 24000 },
     voice: 'zh-CN-XiaoyiNeural',
     rate: '+0%',
     pitch: '+0Hz',
@@ -194,6 +198,12 @@ export const DEFAULTS = {
   memory: { enabled: true, recallCount: 6, dailyConsolidate: true, consolidateTimes: ['04:00', '16:00'] }, // 每天这几个时间把临时记忆（聊天流水）整理进长期记忆、相处经验和说话方式；过了一天的流水整理完清空
   song: {
     enabled: false,
+    // 远端换声网关（本机的 say-sing-drawPlugin，默认 http://127.0.0.1:8899）。
+    // 填了就走网关：它自己搜歌、分离、RVC 换声、混音，这边只等成品；
+    // 留空 = 用本机 RVC 环境自己跑（Windows + 一键安装，见上面 root / voice）
+    gatewayUrl: '',
+    gatewayToken: '',
+    gatewayTimeoutMs: 900000, // 等网关出成品的最长时间（整首可能几分钟）
     root: '', // 翻唱环境目录，留空 = 自动（老安装 C:\Aurabot\rvc，新安装在用户目录下）
     voice: '', // 用哪个音色（models 目录里的 .pth 文件名），留空 = 第一个
     pitch: 0, // 默认变调（半音）；她点歌时会按原唱是男声还是女声自己定
@@ -380,7 +390,7 @@ export function normalize(raw) {
   c.titleFilter.title = String(c.titleFilter.title ?? '').replace(/[​-‍﻿]/g, '').trim().slice(0, 30) || '大肥鱼'
   g.burstMax = num(g.burstMax, 8, 1, 50)
   g.burstWindowSec = num(g.burstWindowSec, 120, 10, 3600)
-  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http'].includes(c.voice.engine)) c.voice.engine = 'auto'
+  if (!['auto', 'edge', 'windows', 'cosyvoice', 'gptsovits', 'http', 'openai'].includes(c.voice.engine)) c.voice.engine = 'auto'
   c.voice.songVoice = String(c.voice.songVoice || '').slice(0, 120)
   c.voice.songPitch = Math.max(-24, Math.min(24, Math.round(Number(c.voice.songPitch) || 0)))
   c.voice.cosyvoice.sampleRate = num(c.voice.cosyvoice.sampleRate, 22050, 8000, 48000)

@@ -206,6 +206,28 @@ async function httpSynth(text, c) {
   return saveAudio(await fetchAudio(tpl.split('{text}').join(encodeURIComponent(text)), { method: 'GET' }), 24000)
 }
 
+/**
+ * OpenAI 兼容 TTS：POST {baseUrl}/audio/speech。
+ * 本机的 say-sing-drawPlugin 网关（默认 http://127.0.0.1:8899/v1）就是这个协议：
+ * 云端 Breeze 优先、本机模型兜底，全在网关那边决定，这边只负责发文字、收音频。
+ * 请求体：{ model, input（要念的话）, voice, response_format, speed? }，必须带 Bearer 令牌。
+ */
+export async function openaiSynth(text, c) {
+  const base = String(c.baseUrl || '').replace(/\/+$/, '')
+  if (!base) throw new Error('没填 OpenAI 兼容 TTS 地址（例：http://127.0.0.1:8899/v1）')
+  const headers = { 'content-type': 'application/json' }
+  if (c.apiKey) headers.authorization = `Bearer ${c.apiKey}`
+  const body = { input: text, voice: String(c.voice || 'alloy'), response_format: String(c.format || 'mp3') }
+  if (c.model) body.model = String(c.model)
+  if (Number(c.speed) && Number(c.speed) !== 1) body.speed = Number(c.speed)
+  const buf = await fetchAudio(
+    `${base}/audio/speech`,
+    { method: 'POST', headers, body: JSON.stringify(body) },
+    Number(c.timeoutMs) || 120000,
+  )
+  return saveAudio(buf, Number(c.sampleRate) || 24000)
+}
+
 /** 说话语音的后处理：目前原样返回（RVC 换音色只用在翻唱上，语音条直接用 TTS 的声音）。 */
 export const voiceConverters = []
 
@@ -217,13 +239,22 @@ export async function textToSpeech(text, opt = {}, log) {
   if (!clean) throw new Error('没有要念的文字')
   let file = ''
   let engine = ''
-  const local = { cosyvoice: cosyvoiceSynth, gptsovits: gptsovitsSynth, http: httpSynth }[opt.engine]
+  const local = { cosyvoice: cosyvoiceSynth, gptsovits: gptsovitsSynth, http: httpSynth, openai: openaiSynth }[opt.engine]
   if (local) {
     try {
       file = await local(clean, opt[opt.engine] || {})
       engine = opt.engine
     } catch (error) {
-      log?.warn(`${opt.engine} 失败：${error.message} → 改用 Windows 语音`)
+      log?.warn(`${opt.engine} 失败：${error.message} → 改用 edge-tts`)
+      // 本地 / 自建服务挂了别直接掉到 Windows 机械音：先试 edge-tts
+      if (opt.engine !== 'windows' && edgeInstalled()) {
+        try {
+          file = await edgeSynth(clean, opt.voice || 'zh-CN-XiaoyiNeural', opt.rate, opt.pitch)
+          engine = 'edge'
+        } catch (error2) {
+          log?.warn(error2.message, '→ 改用 Windows 语音')
+        }
+      }
     }
   } else if (opt.engine !== 'windows' && edgeInstalled()) {
     try {

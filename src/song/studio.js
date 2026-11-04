@@ -409,6 +409,8 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
   function status() {
     const p = P()
     const voices = listVoices(p.models)
+    // 远端换声网关：本机不装环境也能唱，所以 ready 只看网关有没有填地址
+    const gateway = String(cfg().gatewayUrl || '').trim()
     const parts = {
       python: existsSync(p.python),
       applio: existsSync(join(p.applio, 'core.py')),
@@ -416,13 +418,20 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
       ffmpeg: existsSync(p.ffmpeg),
       weights: existsSync(p.rmvpe) && existsSync(p.contentvec),
       separatorModel: separatorReady(p.separatorModels, cfg().separatorModel),
+      gateway: Boolean(gateway),
     }
     // 换声交给本地脚本时，不需要内置的 Applio / 预训练文件 / 音色模型（下载、分离、混音还是插件做）
     const localSong = Boolean(local?.active('song'))
-    const ready = localSong ? ['python', 'separator', 'ffmpeg', 'separatorModel'].every((k) => parts[k]) : Object.values(parts).every(Boolean) && voices.length > 0
+    const localKeys = ['python', 'applio', 'separator', 'ffmpeg', 'weights', 'separatorModel']
+    const ready = gateway
+      ? true
+      : localSong
+        ? ['python', 'separator', 'ffmpeg', 'separatorModel'].every((k) => parts[k])
+        : localKeys.every((k) => parts[k]) && voices.length > 0
     return {
       enabled: cfg().enabled,
       ready,
+      gateway,
       root: p.root,
       defaultRoot: defaultRoot(),
       rootCheck: checkRoot(p.root),
@@ -435,7 +444,11 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
       current: current ? { ...current } : null,
       queue: queue.map((q) => ({ query: q.query, chatId: q.chatId })),
       history: history.slice(0, 10),
-      message: !voices.length ? '还没有音色：在下面「音色模型」里导入你有权使用的 RVC 模型（.pth 或 zip）' : ready ? (cfg().enabled ? '可以点歌了' : '准备好了，打开开关就能用') : '还差一些组件，点「一键安装」',
+      message: gateway
+        ? (cfg().enabled ? '点歌走远端网关（本机不用装环境）' : '准备好了，打开开关就能用')
+        : !voices.length
+          ? '还没有音色：在下面「音色模型」里导入你有权使用的 RVC 模型（.pth 或 zip）'
+          : ready ? (cfg().enabled ? '可以点歌了' : '准备好了，打开开关就能用') : '还差一些组件，点「一键安装」',
     }
   }
 
@@ -774,8 +787,61 @@ export function createSongStudio({ getConfig, log, sendVoiceFile, sendText, onSu
     return out
   }
 
+  /**
+   * 远端换声网关（本机的 say-sing-drawPlugin，默认 127.0.0.1:8899）：
+   * POST /sing {song, voice, maxSeconds} → {jobId}；轮询 GET /jobs/<id> 到 state=done；
+   * 成品在 audioUrl（HTTP 地址或网关内的 /files/xxx），下回来当语音条。
+   * 搜歌 / 分离 / RVC / 混音全在网关那边做，这边只等成品，所以不需要本机 Python 环境。
+   */
+  async function processRemote(job, gw, token) {
+    const base = String(gw).replace(/\/+$/, '')
+    const headers = { 'content-type': 'application/json' }
+    if (token) headers.authorization = `Bearer ${token}`
+    current.stage = '交给网关点歌'
+    const started = await fetch(`${base}/sing`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        song: job.query,
+        voice: job.voice || cfg().voice || '',
+        maxSeconds: Number(cfg().maxVoiceSec) || 0,
+      }),
+      signal: AbortSignal.timeout(30000),
+    })
+    const startedJson = await started.json().catch(() => ({}))
+    if (!started.ok || !startedJson.jobId) {
+      throw new Error(startedJson.message || `网关没接这单（HTTP ${started.status}）`)
+    }
+    const deadline = Date.now() + (Number(cfg().gatewayTimeoutMs) || 900000)
+    let view = {}
+    while (Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 2000))
+      const poll = await fetch(`${base}/jobs/${startedJson.jobId}`, { headers, signal: AbortSignal.timeout(15000) })
+      view = await poll.json().catch(() => ({}))
+      if (view.stage) current.stage = String(view.stage).slice(0, 30)
+      if (view.state === 'done') break
+      if (view.state === 'failed') throw new Error(view.error || '网关那边唱失败了')
+    }
+    if (view.state !== 'done') throw new Error('等网关出成品超时了（整首可能要几分钟），稍后再点一次')
+    const url = String(view.audioUrl || '')
+    if (!url) throw new Error('网关做完了但没给成品地址')
+    const full = /^https?:/i.test(url) ? url : base + (url.startsWith('/') ? url : '/' + url)
+    const audio = await fetch(full, { headers, signal: AbortSignal.timeout(180000) })
+    if (!audio.ok) throw new Error(`下成品失败：HTTP ${audio.status}`)
+    const dir = join(work(), Date.now().toString(36))
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, 'gateway.mp3')
+    writeFileSync(file, Buffer.from(await audio.arrayBuffer()))
+    log.info(`翻唱（网关）：「${job.query}」成品 ${Math.round(statSync(file).size / 1024)}KB`)
+    return { file, voice: job.voice || cfg().voice || 'gateway', pitch: 0, dir }
+  }
+
   async function process1(job) {
     const c = cfg()
+    // 填了网关地址就走远端：本机不需要 RVC 环境
+    if (String(c.gatewayUrl || '').trim()) {
+      return processRemote(job, c.gatewayUrl.trim(), String(c.gatewayToken || '').trim())
+    }
     const voice = listVoices(P().models).find((v) => v.id === (job.voice || c.voice)) || listVoices(P().models)[0]
     if (!voice && !local?.active('song')) throw new Error('还没有可用的音色模型')
     const pitch = Number.isFinite(Number(job.pitch)) ? Math.max(-24, Math.min(24, Math.round(Number(job.pitch)))) : Number(c.pitch) || 0
