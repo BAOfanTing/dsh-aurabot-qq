@@ -1131,8 +1131,11 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
 
     // 拼文案
     let text = msg.text
+    let fwdImages = []
     if (msg.forwards?.length) {
-      text = await expandForwards(msg, text)
+      const expanded = await expandForwards(msg, text)
+      text = expanded.text
+      fwdImages = expanded.images
       if (msg.kind === 'group') {
         const last = (groupBuf.get(msg.groupId) || []).findLast?.((x) => x.uid === msg.userId)
         if (last) last.text = text
@@ -1159,6 +1162,18 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
         for (let i = 0; i < imgs.length; i++) content.push({ type: 'image', data: imgs[i].data, mediaType: imgs[i].mediaType, name: `qq-${msg.messageId}-${i + 1}` })
       }
     }
+    // 合并转发里的图：和直接发来的图一起算，最多 4 张；模型看不了图就只留一句说明
+    if (fwdImages.length) {
+      const room = Math.max(0, 4 - imgs.length)
+      if ((await canSeeImages(dsh, cfg)) === false) {
+        content.push({ type: 'text', text: `（转发的聊天记录里还有 ${fwdImages.length} 张图片，你现在的模型看不了图，只能知道有那么几张）` })
+        log.debug(`模型不支持看图：转发里的 ${fwdImages.length} 张图换成文字提示`)
+      } else if (!room) {
+        content.push({ type: 'text', text: `（转发的聊天记录里还有 ${fwdImages.length} 张图片，前面已经给了 ${imgs.length} 张，这次先不给你看了）` })
+      } else {
+        for (const im of fwdImages.slice(0, room)) content.push({ type: 'image', data: im.data, mediaType: im.mediaType, name: im.name })
+      }
+    }
     // 引用里的图 / 表情包也给她看（最多 2 张，总数不超过 4；看不了图的模型靠上面的文字说明）
     if (quoted?.ok && (quoted.images.length || quoted.stickers.length) && imgs.length < 4) {
       const qImgs = await quoteImages(quoted, Math.min(2, 4 - imgs.length))
@@ -1172,17 +1187,35 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     enqueue({ chatId: msg.chatId, kind: msg.kind, userId: msg.userId, groupId: msg.groupId, nickname: msg.nickname }, content, msg.userId, wantsVoice(msg.text), mode, { stickerPick })
   }
 
-  /** 把消息里的「[合并转发]」换成里面的聊天记录（最多 40 条，嵌套的转发不再展开）。 */
+  /**
+   * 把消息里的「[合并转发]」换成里面的聊天记录（最多 40 条，嵌套的转发不再展开）。
+   * 里面带的图片/表情也一并下载下来交给模型（最多 3 张）——以前只写「（图片/表情）」四个字，
+   * 她等于看不见转发里的图，只能瞎猜。返回 { text, images }。
+   */
   async function expandForwards(msg, text) {
     let out = text
+    const images = []
     for (const id of msg.forwards.slice(0, 2)) {
-      let lines = []
+      const lines = []
       try {
         const r = await onebot.call('get_forward_msg', { id }, { timeoutMs: 15000 })
         for (const node of (r?.messages || []).slice(0, 40)) {
           const who = node.sender?.card || node.sender?.nickname || String(node.sender?.user_id ?? node.user_id ?? '某人')
           const m = parseMessageEvent({ message_type: 'private', user_id: node.sender?.user_id ?? node.user_id, message: node.message ?? node.content ?? [] }, selfId, { faceName: faces.nameOf })
-          lines.push(`  ${who}：${(m.text || '（图片/表情）').slice(0, 120)}`)
+          const pics = [...m.stickers, ...m.images]
+          for (const seg of pics) {
+            if (images.length >= 3) break
+            try {
+              const buf = await segmentBytes(seg, onebot, { maxBytes: 8 * 1024 * 1024 })
+              const mime = mimeOf(buf)
+              if (!mime.startsWith('image/')) continue
+              images.push({ data: buf.toString('base64'), mediaType: mime, name: `fwd-${images.length + 1}` })
+            } catch (error) {
+              log.debug('转发里的图片下载失败：', error.message)
+            }
+          }
+          const note = pics.length ? `（发了 ${pics.length} 张图${m.text ? '，上面那行是配文' : ''}）` : ''
+          lines.push(`  ${who}：${(m.text || (pics.length ? '' : '（没有文字）')).slice(0, 120)}${note}`)
         }
       } catch (error) {
         log.debug('拉合并转发失败：', error.message)
@@ -1190,7 +1223,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       const body = lines.length ? `[合并转发的聊天记录（${lines.length} 条）]\n${lines.join('\n').slice(0, 2000)}\n[转发结束]` : '[合并转发（内容没拉到）]'
       out = out.replace('[合并转发]', body)
     }
-    return out
+    return { text: out, images }
   }
 
   // ---------- 戳一戳 ----------

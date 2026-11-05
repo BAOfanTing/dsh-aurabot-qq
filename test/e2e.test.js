@@ -454,6 +454,25 @@ test('合并转发：她能看到转发里的聊天记录', async () => {
   assert.match(t, /转发乙：转发里的话乙/)
 })
 
+test('合并转发里带的图片：她要能真看见（以前只写「（图片/表情）」四个字）', async () => {
+  const png = fakePng(320, 320, 2)
+  mock.state.forwards = { fw2: [
+    {
+      sender: { user_id: 811, nickname: '截图甲' },
+      message: [
+        { type: 'image', data: { file: 'base64://' + png.toString('base64') } },
+        { type: 'text', data: { text: '这个报错啥意思' } },
+      ],
+    },
+  ] }
+  const before = fake.turns.length
+  mock.push(grp('558', '812', [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' 他发的图你看得懂吗' } }, { type: 'forward', data: { id: 'fw2' } }], '寄件人'))
+  await until(() => fake.turns.length > before)
+  const t = fake.turns.at(-1)
+  assert.match(t.userText, /截图甲：.*这个报错啥意思（发了 1 张图，上面那行是配文）/)
+  assert.equal(t.images, 1, '转发里的图要作为图片块交给模型，不能只留一句文字')
+})
+
 test('群聊刹车：短时间说够次数就歇着，主人 @ 还能叫动', async () => {
   const at = (t) => [{ type: 'at', data: { qq: BOT } }, { type: 'text', data: { text: ' ' + t } }]
   for (let i = 0; i < 2; i++) {
