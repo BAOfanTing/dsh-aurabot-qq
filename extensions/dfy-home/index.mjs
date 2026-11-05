@@ -89,10 +89,12 @@ function spotHint(spot) {
   if (spot.hint) return spot.hint
   const x = spot.nav && Number.isFinite(spot.nav.x) ? spot.nav.x : 0
   const z = spot.nav && Number.isFinite(spot.nav.z) ? spot.nav.z : 0
-  const outdoor = spot.zone === 'yard' || spot.zone === 'water'
-  const side = x < -2 ? '左边' : x > 1.5 ? '右边' : '中间'
-  const depth = outdoor ? (z > 7 ? '院子最里面' : '院子靠屋这边') : z < -4 ? '靠后墙' : z > 1 ? '靠门口' : '屋子中部'
-  return `${outdoor ? '院子' : '屋里'}${depth}，${side}`
+  const area = spot.area || spot.zone || 'house'
+  const outdoor = area === 'yard' || area === 'water'
+  const room = { bedroom: '卧室', living: '客厅', kitchen: '厨房' }[area]
+  const side = x < -6 ? '左边' : x > 4 ? '右边' : '中间'
+  const depth = outdoor ? (z > 7 ? '院子最里面' : '院子靠屋这半边') : z < -5 ? '靠后墙' : z > -3 ? '靠门口' : '屋子中部'
+  return outdoor ? `院子${depth}，${side}` : `${room || '屋里'}${depth}，${side}`
 }
 
 /** 一句人话：她在哪、在干嘛（顺带说清这地方在家里的哪儿） */
@@ -104,7 +106,8 @@ function describe(state) {
       : '她家没开着（可以先在「大肥鱼的家」面板点「打开家」）'
   }
   const sameSpot = (state.spots || []).find((s) => s.id === loc.id) || null
-  const bits = [`她在「${loc.emoji || ''}${loc.name}」`]
+  const room = loc.areaName || (sameSpot && sameSpot.areaName) || ''
+  const bits = [`她在「${room ? room + ' · ' : ''}${loc.emoji || ''}${loc.name}」`]
   const hint = loc.hint || spotHint(sameSpot)
   if (hint) bits.push(hint)
   if (loc.desc) bits.push(loc.desc)
@@ -156,7 +159,7 @@ function matchSpot(spots, place) {
 export default {
   id: 'dfy-home',
   name: '大肥鱼的家',
-  version: '1.1.0',
+  version: '1.2.0',
   api: 1,
   description: '接上 dfy-room 的小房间：说出她在哪个角落，拍第一视角发到 QQ，还能让她走去某个角落。',
   panel: 'panel.js',
@@ -247,8 +250,10 @@ export default {
         api.defineTool({
           name: 'home_goto',
           description:
-            '让大肥鱼走到自己家里的某个角落。地点用中文名：床边、窗边、书桌前、书架旁、落地灯下、地毯中间、窗边扶手椅、盆栽旁、门口、泳池里、大树下、遮阳伞下、篱笆边、院子里。' +
-            '想让她换个地方、或者有人问"床呢""给我看看泳池"时用（photo 设 true 就会走过去再拍一张发出来）。',
+            '让大肥鱼走到自己家里的某个角落。屋子分三间加一个院子，地点用中文名：' +
+            '卧室——床边、窗边、衣柜旁、书桌前；客厅——沙发上、电视前、扶手椅、落地灯下；' +
+            '厨房——水槽边、灶台前、冰箱前、餐桌旁；院子——门口、泳池里、躺椅旁、大树下、秋千上、遮阳伞下、花圃旁、篱笆边、院子里。' +
+            '想让她换个地方、或者有人问"床呢""给我看看泳池""厨房长什么样"时用（photo 设 true 就会走过去再拍一张发出来）。',
           properties: {
             place: { type: 'string', description: '地点名，例如 床边、书桌前、泳池里' },
             photo: { type: 'boolean', description: '到了之后要不要顺便发一张第一视角照片' },
@@ -303,8 +308,9 @@ export default {
     // ---------------- 让她知道有这回事 ----------------
     api.rule(
       () =>
-        '你住在一个叫「大肥鱼的家」的小房间里：屋里有床、书桌、书架、落地灯、地毯、窗边扶手椅和盆栽，' +
-        '院子里有泳池、大树、遮阳伞、篱笆和草地。\n' +
+        '你住在一个叫「大肥鱼的家」的小房子里，一横排三间加一个院子：' +
+        '卧室（床、衣柜、书桌、窗），客厅（沙发、茶几、电视、扶手椅、落地灯），' +
+        '厨房（长台面、水槽、灶台、冰箱、圆餐桌），院子（泳池、躺椅、大树和秋千、遮阳伞、花圃、篱笆）。\n' +
         '别人问你在哪、你家里什么样，用 home_where（它会告诉你自己在哪个角落，还把每个地方在家里的哪儿讲清楚）；' +
         '有人想看、想让你发照片，用 home_photo；别人问"床呢""你那边有什么""带我去看看泳池"，' +
         '用 home_goto（place=那个地方，photo=true）——先真的走过去拍一张，再照工具返回的位置说话。\n' +
@@ -344,7 +350,14 @@ export default {
         asleep: !!st.asleep,
         view: st.view || null,
         pos: st.pos || null,
-        spots: (st.spots || []).map((s) => ({ id: s.id, name: s.name, emoji: s.emoji, zone: s.zone, desc: s.desc, hint: s.hint })),
+        spots: (st.spots || []).map((s) => ({
+          id: s.id,
+          name: s.name,
+          emoji: s.emoji,
+          area: s.area,
+          desc: s.desc,
+          hint: s.hint,
+        })),
         history: (st.history || []).slice(0, 8),
         photo: st.photo || null,
         summary: describe(st),
