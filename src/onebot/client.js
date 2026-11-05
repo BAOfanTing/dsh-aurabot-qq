@@ -18,6 +18,19 @@ export class OneBotError extends Error {
 }
 
 /**
+ * 这次发送是不是「可能其实已经发出去了」：
+ *   · 超时——网关只是没等到回执，消息常常已经在路上；
+ *   · QQ 明确回了 241——语音条这类媒体消息实测就是这样：SnowLuma 按失败抛错，
+ *     但对方在 QQ 里能听到这条语音。
+ * 判成这类就别再补发一条同样的文字，否则对方会同时收到语音和一模一样的文字。
+ */
+export function isMaybeDelivered(error) {
+  if (!error || error.transport) return false // 没连上网关 = 肯定没发出去
+  const msg = String(error?.data?.message || error?.message || '')
+  return /超时|timeout|result=241/i.test(msg)
+}
+
+/**
  * @param {object} o
  * @param {() => {httpUrl:string, wsUrl:string, httpToken:string, wsToken:string}} o.endpoint 每次连接时现取
  * @param {(event: object) => void} o.onEvent

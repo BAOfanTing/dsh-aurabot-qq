@@ -8,6 +8,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { appendFileSync, mkdirSync, readFileSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { homedir } from 'node:os'
+import { isMaybeDelivered } from '../onebot/client.js'
 import { dataDir, readJson, writeJson } from '../core/store.js'
 import { parseMessageEvent } from './inbound.js'
 import { parseReply, bubbleDelay, wantsVoice } from './reply.js'
@@ -427,7 +428,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return kind === 'group' ? { kind: 'group', id } : kind === 'private' ? { kind: 'private', id } : null
   }
 
-  async function sendSegments(chatId, message, note, { force = false } = {}) {
+  async function sendSegments(chatId, message, note, { force = false, timeoutMs = 0, throwOnError = false } = {}) {
     const cfg = getConfig()
     const tgt = targetOf(chatId)
     if (!tgt) return null
@@ -458,7 +459,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     const action = tgt.kind === 'group' ? 'send_group_msg' : 'send_private_msg'
     const params = tgt.kind === 'group' ? { group_id: Number(tgt.id), message } : { user_id: Number(tgt.id), message }
     try {
-      const r = await onebot.call(action, params)
+      const r = await onebot.call(action, params, timeoutMs ? { timeoutMs } : undefined)
       if (r && r.message_id !== undefined) {
         sentIds.add(String(r.message_id))
         if (sentIds.size > 500) sentIds.delete(sentIds.values().next().value)
@@ -468,6 +469,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     } catch (error) {
       bump('errors')
       log.warn(`发到 ${chatId} 失败：`, error.message)
+      if (throwOnError) throw error
       return null
     }
   }
@@ -486,6 +488,10 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     return sendSegments(chatId, [...quote(replyId), ...mention(userId, segs), ...segs], (replyId ? '[引用] ' : '') + text.slice(0, 60))
   }
 
+  // 语音条上传比文字重得多（base64 整段音频 + 网关转码），20 秒默认超时不够，
+  // 卡在默认超时上会被误判成「发失败」而补发文字，对方就同时收到语音和文字。
+  const VOICE_SEND_TIMEOUT_MS = 90_000
+
   async function sendVoice(chatId, text, replyId, userId) {
     try {
       // 表情标签 / emoji 不念出来：TTS 只念能说的字（用户反馈：发语音时「呲牙」被读出来）
@@ -496,11 +502,18 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       // QQ 客户端不支持「引用 / @ + 语音」同一条消息：这样发电脑 QQ 是空白气泡、手机 QQ 提示
       // 「该消息类型暂不支持查看」，语音也听不到（issue #103）。语音条一律单独成条，引用和 @ 只能放弃。
       if (replyId || userId) log.debug(`语音条不能带引用/@（QQ 限制），单独发：${chatId}`)
-      const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], `[语音·${engine}] ${text.slice(0, 40)}`)
+      const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], `[语音·${engine}] ${text.slice(0, 40)}`, { timeoutMs: VOICE_SEND_TIMEOUT_MS, throwOnError: true })
       if (r || getConfig().dryRun || !getConfig().enabled) bump('voice')
       if (!r && getConfig().enabled && !getConfig().dryRun) throw new Error('网关没接受语音')
       return true
     } catch (error) {
+      // 超时 / QQ 回 241 ≠ 没发出去：语音上传慢，网关常常是「已经发出去了只是没回执」，
+      // 或者媒体消息被客户端判失败但对方其实收到了。这种情况再补一条同样的文字，
+      // 对方就会同时收到语音和文字（用户反馈过），所以只记日志不补发。
+      if (isMaybeDelivered(error)) {
+        log.warn('语音可能已经发出去了（等回执超时 / QQ 回 241），不重复发文字：', error.message)
+        return false
+      }
       log.warn('语音没发出去，改发文字：', error.message)
       await sendText(chatId, text, replyId, undefined, userId)
       return false
@@ -525,7 +538,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   /** 把一个音频文件当语音条发出去（翻唱用）。 */
   async function sendVoiceFile(chatId, file, note) {
     const b64 = readFileSync(file).toString('base64')
-    const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], note || '[语音]')
+    const r = await sendSegments(chatId, [{ type: 'record', data: { file: 'base64://' + b64 } }], note || '[语音]', { timeoutMs: VOICE_SEND_TIMEOUT_MS })
     if (r || getConfig().dryRun || !getConfig().enabled) bump('voice')
     if (!r && getConfig().enabled && !getConfig().dryRun) throw new Error('网关没接受这条语音')
     return r
