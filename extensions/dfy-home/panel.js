@@ -163,6 +163,7 @@ return function Panel({ settings, draftSettings, setSettings, save, toast }) {
             h('div', { style: { fontSize: 16, fontWeight: 700, color: '#2b4c8f' } },
               `${(loc && loc.emoji) || '📍'} ${(loc && loc.name) || '还没报位置'}`),
             h('div', { style: small }, state.summary || ''),
+            loc && loc.hint ? h('div', { style: small }, `📍 ${loc.hint}`) : null,
             h('div', { style: small },
               `${state.online ? '🟢 页面开着' : '⚪ 页面没开'} · 动作：${state.clip || '—'}${state.asleep ? ' · 睡着中' : ''}`,
               state.photo ? ` · 最近一张照片 ${Math.round((state.photo.ageMs || 0) / 1000)} 秒前` : ' · 还没有照片'))

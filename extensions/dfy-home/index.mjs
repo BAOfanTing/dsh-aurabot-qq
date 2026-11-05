@@ -68,7 +68,34 @@ async function homeState(api) {
   return roomJson(api, '/api/home')
 }
 
-/** 一句人话：她在哪、在干嘛 */
+/**
+ * 「家没开着」是很正常的事，不该被记成模块报错——插件会把抛出的错误记进模块状态，
+ * 面板顶上就一直挂着一条红字。接口里一律用它包一层，转成 { ok: false, message }。
+ */
+async function tryCall(fn) {
+  try {
+    return { ok: true, value: await fn() }
+  } catch (err) {
+    return { ok: false, message: String((err && err.message) || err || '出错了') }
+  }
+}
+
+/**
+ * 这个地方在家里的哪儿。
+ * 房间页面会直接给一句 hint；老版本页面没给，就按坐标兜一句粗方位，别让她答"不知道床在哪"。
+ */
+function spotHint(spot) {
+  if (!spot) return ''
+  if (spot.hint) return spot.hint
+  const x = spot.nav && Number.isFinite(spot.nav.x) ? spot.nav.x : 0
+  const z = spot.nav && Number.isFinite(spot.nav.z) ? spot.nav.z : 0
+  const outdoor = spot.zone === 'yard' || spot.zone === 'water'
+  const side = x < -2 ? '左边' : x > 1.5 ? '右边' : '中间'
+  const depth = outdoor ? (z > 7 ? '院子最里面' : '院子靠屋这边') : z < -4 ? '靠后墙' : z > 1 ? '靠门口' : '屋子中部'
+  return `${outdoor ? '院子' : '屋里'}${depth}，${side}`
+}
+
+/** 一句人话：她在哪、在干嘛（顺带说清这地方在家里的哪儿） */
 function describe(state) {
   const loc = state.location
   if (!loc) {
@@ -76,7 +103,10 @@ function describe(state) {
       ? '她还没报位置（可能是刚打开页面）'
       : '她家没开着（可以先在「大肥鱼的家」面板点「打开家」）'
   }
+  const sameSpot = (state.spots || []).find((s) => s.id === loc.id) || null
   const bits = [`她在「${loc.emoji || ''}${loc.name}」`]
+  const hint = loc.hint || spotHint(sameSpot)
+  if (hint) bits.push(hint)
   if (loc.desc) bits.push(loc.desc)
   if (state.asleep) bits.push('已经睡着了')
   else if (state.clip) bits.push(`正在「${state.clip}」`)
@@ -126,7 +156,7 @@ function matchSpot(spots, place) {
 export default {
   id: 'dfy-home',
   name: '大肥鱼的家',
-  version: '1.0.0',
+  version: '1.1.0',
   api: 1,
   description: '接上 dfy-room 的小房间：说出她在哪个角落，拍第一视角发到 QQ，还能让她走去某个角落。',
   panel: 'panel.js',
@@ -166,14 +196,21 @@ export default {
         api.defineTool({
           name: 'home_where',
           description:
-            '查大肥鱼现在在自己家（那个小房间）里的哪个角落、正在做什么。有人问她"你在哪""你在家干什么呢"时用。',
+            '查大肥鱼现在在自己家（那个小房间）里的哪个角落、正在做什么，并列出家里都有哪些地方（含"床在哪、书桌在哪"这种方位）。' +
+            '有人问她"你在哪""你在家干什么呢""床在哪儿"时用。',
           properties: {},
           execute: async () => {
-            const st = await homeState(api)
-            const spots = (st.spots || []).map((s) => s.name).filter(Boolean)
+            const r = await tryCall(() => homeState(api))
+            if (!r.ok) return { ok: false, message: r.message }
+            const st = r.value
+            const spots = (st.spots || [])
+              .filter((s) => s.name)
+              .map((s) => `${s.name}（${spotHint(s)}）`)
             return {
               ok: true,
-              message: describe(st) + (spots.length ? `\n家里能待的地方：${spots.join('、')}` : ''),
+              message:
+                describe(st) +
+                (spots.length ? `\n家里这几个地方她随时能去：\n- ${spots.join('\n- ')}` : ''),
               spot: st.location ? st.location.name : null,
               online: !!st.online,
             }
@@ -186,11 +223,21 @@ export default {
           api.defineTool({
             name: 'home_photo',
             description:
-              '拍一张大肥鱼眼睛看到的第一视角照片，直接发进当前聊天。有人说"给我看看你那边""发张照片/截图""你现在看到什么"时用。',
+              '拍一张大肥鱼眼睛看到的第一视角照片，直接发进当前聊天（她站在哪就拍哪，不会拍到别的地方）。' +
+              '有人说"给我看看你那边""发张照片/截图""你现在看到什么"时用。',
             properties: {},
             execute: async () => {
-              const r = await sendPhoto(chatId)
-              return { ok: true, message: `已经发了一张第一视角照片（她当时在${r.where}）` }
+              try {
+                const r = await sendPhoto(chatId)
+                return {
+                  ok: true,
+                  message:
+                    `照片已经发进聊天了。拍的时候她在「${r.where}」。` +
+                    '这张图只代表那一个角落——按这个位置说话，别把它说成别的地方，也别编照片里没有的东西。',
+                }
+              } catch (err) {
+                return { ok: false, message: String(err.message || err) }
+              }
             },
           })
         )
@@ -200,35 +247,51 @@ export default {
         api.defineTool({
           name: 'home_goto',
           description:
-            '让大肥鱼走到自己家里的某个角落。地点用中文名，例如 泳池里 / 书桌前 / 窗边 / 地毯中间 / 大树下 / 院子里。想让她换个地方并让对方看一眼时，把 photo 设成 true。',
+            '让大肥鱼走到自己家里的某个角落。地点用中文名：床边、窗边、书桌前、书架旁、落地灯下、地毯中间、窗边扶手椅、盆栽旁、门口、泳池里、大树下、遮阳伞下、篱笆边、院子里。' +
+            '想让她换个地方、或者有人问"床呢""给我看看泳池"时用（photo 设 true 就会走过去再拍一张发出来）。',
           properties: {
-            place: { type: 'string', description: '地点名，例如 泳池里、书桌前、院子里' },
+            place: { type: 'string', description: '地点名，例如 床边、书桌前、泳池里' },
             photo: { type: 'boolean', description: '到了之后要不要顺便发一张第一视角照片' },
           },
           required: ['place'],
           execute: async ({ place, photo }) => {
-            const st = await homeState(api)
+            const r0 = await tryCall(() => homeState(api))
+            if (!r0.ok) return { ok: false, message: r0.message }
+            const st = r0.value
             const spot = matchSpot(st.spots, place)
             if (!spot) {
-              return { ok: false, message: `家里没有「${place}」这个地方。能去的有：${(st.spots || []).map((s) => s.name).join('、') || '（还没读到地点）'}` }
+              return {
+                ok: false,
+                message: `家里没有「${place}」这个地方。能去的有：${(st.spots || []).map((s) => s.name).join('、') || '（还没读到地点）'}`,
+              }
             }
-            await roomJson(api, '/api/home/command', { method: 'POST', body: { type: 'goto', spot: spot.id } })
+            const sentCmd = await tryCall(() =>
+              roomJson(api, '/api/home/command', { method: 'POST', body: { type: 'goto', spot: spot.id } })
+            )
+            if (!sentCmd.ok) return { ok: false, message: sentCmd.message }
             // 等她走过去（房间那边走到就更新状态）
             let now = st
-            for (let i = 0; i < 24; i++) {
+            let arrived = false
+            for (let i = 0; i < 26; i++) {
               await sleep(700)
-              now = await homeState(api).catch(() => now)
-              if (now.location && now.location.id === spot.id) break
+              const s2 = await tryCall(() => homeState(api))
+              if (s2.ok) now = s2.value
+              if (now.location && now.location.id === spot.id) {
+                arrived = true
+                break
+              }
             }
             let extra = ''
             if (photo && photoOk) {
-              const r = await sendPhoto(chatId)
-              extra = `，还发了一张第一视角`
-              void r
+              const p = await tryCall(() => sendPhoto(chatId))
+              if (p.ok) extra = '，还发了一张那边的第一视角照片'
+              else return { ok: false, message: `她已经到「${spot.name}」了，但照片没发出去：${p.message}` }
             }
             return {
               ok: true,
-              message: `她走到「${spot.name}」了${extra}。${describe(now)}`,
+              message: arrived
+                ? `她已经站在「${spot.name}」了${extra}。${describe(now)}`
+                : `她正往「${spot.name}」走，现在还在「${(now.location && now.location.name) || '路上'}」`,
             }
           },
         })
@@ -240,9 +303,13 @@ export default {
     // ---------------- 让她知道有这回事 ----------------
     api.rule(
       () =>
-        '你住在一个叫「大肥鱼的家」的小房间里（有床、书桌、书架、落地灯，院子里有泳池和秋千）。' +
-        '别人问你在哪、你想让对方看看你身边时，用 home_where 查位置、home_photo 发一张第一视角照片；' +
-        '想换个角落可以用 home_goto。这些是你的真实位置，不要编。'
+        '你住在一个叫「大肥鱼的家」的小房间里：屋里有床、书桌、书架、落地灯、地毯、窗边扶手椅和盆栽，' +
+        '院子里有泳池、大树、遮阳伞、篱笆和草地。\n' +
+        '别人问你在哪、你家里什么样，用 home_where（它会告诉你自己在哪个角落，还把每个地方在家里的哪儿讲清楚）；' +
+        '有人想看、想让你发照片，用 home_photo；别人问"床呢""你那边有什么""带我去看看泳池"，' +
+        '用 home_goto（place=那个地方，photo=true）——先真的走过去拍一张，再照工具返回的位置说话。\n' +
+        '这些位置和照片都是你真实的状态：不要编造地点，也不要把一张照片说成别的地方；' +
+        '工具说"页面没开着"或"没拍到"时，就照实说家里现在没开。'
     )
 
     // ---------------- 主人命令 ----------------
@@ -252,7 +319,9 @@ export default {
       desc: '看看大肥鱼现在在家哪、并发一张第一视角',
       run: async (arg, msg) => {
         if (api.settings().enabled === false) return '「大肥鱼的家」模块关着，先到面板把它打开'
-        const st = await homeState(api)
+        const r = await tryCall(() => homeState(api))
+        if (!r.ok) return `家里现在没开着：${r.message}`
+        const st = r.value
         const text = describe(st)
         if (/照片|图|看看|照/.test(String(arg || '')) || !arg) {
           await sendPhoto(msg.chatId).catch((err) => api.log.warn('发第一视角失败：', err.message))
@@ -261,10 +330,12 @@ export default {
       },
     })
 
-    // ---------------- 面板接口 ----------------
+    // ---------------- 面板接口（家没开着时回 { ok:false }，不要抛错） ----------------
     api.route('/state', async () => {
       if (api.settings().enabled === false) return { ok: false, message: '模块关着（开关打开后再试）' }
-      const st = await homeState(api)
+      const r = await tryCall(() => homeState(api))
+      if (!r.ok) return r
+      const st = r.value
       return {
         ok: true,
         online: !!st.online,
@@ -273,7 +344,7 @@ export default {
         asleep: !!st.asleep,
         view: st.view || null,
         pos: st.pos || null,
-        spots: (st.spots || []).map((s) => ({ id: s.id, name: s.name, emoji: s.emoji, zone: s.zone, desc: s.desc })),
+        spots: (st.spots || []).map((s) => ({ id: s.id, name: s.name, emoji: s.emoji, zone: s.zone, desc: s.desc, hint: s.hint })),
         history: (st.history || []).slice(0, 8),
         photo: st.photo || null,
         summary: describe(st),
@@ -282,31 +353,49 @@ export default {
     })
 
     api.route('/photo', async () => {
-      const buf = await shotBuffer(api)
+      const r = await tryCall(() => shotBuffer(api))
+      if (!r.ok) return r
+      const buf = r.value
       return { ok: true, dataUrl: 'data:image/jpeg;base64,' + buf.toString('base64'), bytes: buf.length, at: Date.now() }
     })
 
     api.route('/goto', async (req) => {
       const body = await api.core.http.body(req).catch(() => ({}))
-      const st = await homeState(api)
+      const r0 = await tryCall(() => homeState(api))
+      if (!r0.ok) return r0
+      const st = r0.value
       const spot = matchSpot(st.spots, body.spot || body.place)
       if (!spot) return { ok: false, message: `没有这个地方：${body.spot || body.place || '（空）'}` }
-      await roomJson(api, '/api/home/command', { method: 'POST', body: { type: 'goto', spot: spot.id } })
+      const sent = await tryCall(() =>
+        roomJson(api, '/api/home/command', { method: 'POST', body: { type: 'goto', spot: spot.id } })
+      )
+      if (!sent.ok) return sent
       let now = st
-      for (let i = 0; i < 24; i++) {
+      let arrived = false
+      for (let i = 0; i < 26; i++) {
         await sleep(700)
-        now = await homeState(api).catch(() => now)
-        if (now.location && now.location.id === spot.id) break
+        const s2 = await tryCall(() => homeState(api))
+        if (s2.ok) now = s2.value
+        if (now.location && now.location.id === spot.id) {
+          arrived = true
+          break
+        }
       }
-      return { ok: true, message: `她到${spot.name}了`, location: now.location || null }
+      return {
+        ok: true,
+        message: arrived ? `她到${spot.name}了` : `她正走向${spot.name}`,
+        arrived,
+        location: now.location || null,
+      }
     })
 
     api.route('/command', async (req) => {
       const body = await api.core.http.body(req).catch(() => ({}))
       if (!body || !body.type) return { ok: false, message: '要带 type，比如 {"type":"pat"}' }
-      const r = await roomJson(api, '/api/home/command', { method: 'POST', body })
+      const r = await tryCall(() => roomJson(api, '/api/home/command', { method: 'POST', body }))
+      if (!r.ok) return r
       await sleep(600)
-      return { ok: true, id: r.id }
+      return { ok: true, id: r.value.id }
     })
 
     // 一键把家开起来：起 dfy-room 的 server.js，再打开浏览器
