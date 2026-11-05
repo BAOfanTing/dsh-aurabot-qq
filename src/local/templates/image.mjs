@@ -1,9 +1,13 @@
 // 本地接口 · 生图：用你电脑上的画图服务（SD WebUI / Forge / ComfyUI ……）画图（替换面板里填的在线生图服务）。
 // 约定见同目录的「README-本地接口.md」。改完保存就生效，不用重启 DSH；面板「本地接口」页可以点「试一下」。
 //
-// 输入：{ prompt, size, outDir, log }
+// 输入：{ prompt, size, outDir, log, image }
 //   prompt 要画什么（已经带上了面板里的「固定风格」）
 //   size   面板里选的尺寸，比如 "1024x1024"
+//   image  可选：别人发图让她「照这张画」时会给，是 data:image/jpeg;base64,… 的参考图
+//          （插件已缩到长边 1024）。要图生图就自己解出 base64 传给接口，例如 SD WebUI 的
+//          POST /sdapi/v1/img2img，body 里 { init_images: [base64], denoising_strength: 0.6 }；
+//          不处理 image 也没关系，那就退回纯文字生图。
 // 输出：图片的 Buffer，或 { buffer } / { file: 路径 } / { base64 } / { url }
 // 出错就 throw，插件会告诉她没画成。
 

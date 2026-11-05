@@ -55,13 +55,15 @@ function findImage (obj, depth = 0) {
 
 /**
  * 自定义接口这一次要发什么（纯函数，方便单独测）。
+ * image 是可选参考图的 data URI，填了就能在参数值里用 {image}（适合 POST JSON，GET 塞 URL 会很长）。
  * 返回 { url, method, headers, body }。
  */
-export function customRequest (imageGen, prompt) {
+export function customRequest (imageGen, prompt, image = '') {
   const cp = imageGen.custom || {}
   const method = String(cp.method || 'GET').toUpperCase() === 'GET' ? 'GET' : 'POST'
   const { width, height } = dimsOf(imageGen.size)
   const raw = { prompt, model: imageGen.model || '', size: imageGen.size || '', width, height }
+  if (image) raw.image = image
   const enc = { ...raw, prompt: encodeURIComponent(prompt) }
   const params = (Array.isArray(cp.params) ? cp.params : [])
     .map((p) => ({ key: String(p && p.key != null ? p.key : '').trim(), value: p ? p.value : '' }))
@@ -114,40 +116,49 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
   const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
   const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
   const viaCodex = createCodexImage({ auth, fetchImpl: fetch, log })
-  async function generate(prompt, { shape } = {}) {
+  async function generate(prompt, { shape, image } = {}) {
     const config = getConfig().imageGen
     const c = { ...config, size: imageSizeFor(shape, config) }
+    // 拿聊天里那张图当参考：data URI（data:image/jpeg;base64,…），由调用方缩好再传进来
+    const ref = typeof image === 'string' && image ? image : ''
+    if (ref && c.provider === 'codex') throw new Error('订阅接法不支持拿图当参考，换成 OpenAI 兼容 / 自定义接口再试')
     // 本地接口接管：用用户自己电脑上的画图服务
     if (local?.active('image')) {
       const { toImageBuffer } = await import('../local/local.js')
       const t = Date.now()
-      const buf = await toImageBuffer(await local.call('image', { prompt: [c.stylePrompt, prompt].filter(Boolean).join('，'), size: c.size }))
+      const args = { prompt: [c.stylePrompt, prompt].filter(Boolean).join('，'), size: c.size, ...(ref ? { image: ref } : {}) }
+      const buf = await toImageBuffer(await local.call('image', args))
+      if (ref) log.info('本地接口：这次把聊天里那张图一起传过去了（模板要不要用，看它自己接不接 image）')
       log.info(`本地画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
       return buf
     }
     if (!c.enabled) throw new Error('生图还没开启')
     const full = [c.stylePrompt, prompt].filter(Boolean).join('，')
     const t = Date.now()
-    const buf = c.provider === 'codex' ? await viaCodex(c, full, { shape }) : c.provider === 'custom' ? await viaCustom(c, full) : await viaOpenAI(c, full)
+    const buf = c.provider === 'codex'
+      ? await viaCodex(c, full, { shape })
+      : c.provider === 'custom' ? await viaCustom(c, full, { image: ref }) : await viaOpenAI(c, full, { image: ref })
     if (!buf || !buf.length) throw new Error('生图接口没有返回图片')
     if (!String(mimeOf(buf)).startsWith('image/')) throw new Error('生图接口返回的不是图片')
-    log.info(`画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）：${prompt.slice(0, 40)}`)
+    log.info(`画好了一张图（${Math.round(buf.length / 1024)}KB，${Math.round((Date.now() - t) / 1000)}s）${ref ? '（带参考图）' : ''}：${prompt.slice(0, 40)}`)
     return buf
   }
 
   /** 一次生图最多等多久（面板可配；默认 5 分钟）。 */
   const timeoutOf = (c) => imageTimeoutMs(c)
 
-  /** OpenAI 兼容接口。 */
-  async function viaOpenAI (c, prompt) {
+  /** OpenAI 兼容接口。image 是可选的参考图 data URI（多数服务不认，认的就当图生图）。 */
+  async function viaOpenAI (c, prompt, { image } = {}) {
     const base = String(c.baseUrl || '').replace(/\/+$/, '')
     if (!base || !c.model) throw new Error('还没填生图服务地址或模型')
     const headers = { 'content-type': 'application/json' }
     if (c.apiKey) headers.authorization = `Bearer ${c.apiKey}`
+    const body = { model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size }
+    if (image) body.image = image
     const r = await fetch(`${base}/images/generations`, {
       method: 'POST',
       headers,
-      body: JSON.stringify({ model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutOf(c)),
     })
     const j = await r.json().catch(() => ({}))
@@ -162,10 +173,10 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
   }
 
   /** 自定义接口：GET 直接把参数拼在地址上，POST 放进 JSON / 表单。 */
-  async function viaCustom (c, prompt) {
+  async function viaCustom (c, prompt, { image } = {}) {
     const cp = c.custom || {}
     if (!cp.url) throw new Error('还没填自定义生图接口地址')
-    const req = customRequest(c, prompt)
+    const req = customRequest(c, prompt, image || '')
     log.info(`生图请求：${req.method} ${req.url.slice(0, 160)}`)
     const r = await fetch(req.url, {
       method: req.method,

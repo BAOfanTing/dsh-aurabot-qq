@@ -3180,6 +3180,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
             f.range('imageGen.timeoutMs', 60000, 600000, 30000, (v) => Math.round(v / 1000) + ' 秒')),
           h(Row, { label: '只给主人画', hint: '关掉后群友也能让她画（会花你的额度）' }, f.sw('imageGen.ownerOnly')),
           h(Row, { label: '让她画完自己看一眼', hint: '开着才把画好的图传给她看（模型不支持看图时自动不传）；关掉就只回一句「画好了」，不传图' }, f.sw('imageGen.seeOwn')),
+          h(Row, { label: '能照着聊天里的图画', hint: '开着时，别人发图说「照这张画」「把这张改成…」，她能拿这条聊天最近 30 分钟那张图当参考（本机出图服务认 image 字段；云端接口多数不认，会退回纯文字生图）' }, f.sw('imageGen.chatImage')),
           isCustom ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '例子：地址填 https://image.pollinations.ai/prompt/{prompt}，再加 model=flux-anime、width=1080、height=1920、nologo=true 四个参数，GET 就会请求 …/prompt/<提示词>?model=flux-anime&width=1080&…') : null,
           !c.enabled ? h('div', { className: 'ab-note', style: { marginTop: 10 } }, '还没开启。填好接口信息、打开右上角开关并保存后，她就会多一个「画图」能力。') : null,
         ),

@@ -57,6 +57,8 @@ export const DEFAULTS = {
     // 一次生图最多等多久：本机大模型冷启动就要 20 秒上下，一张图 1~2 分钟很正常。
     // 以前写死 180 秒，碰上冷启动 + 排队会正好卡在超时线上被误判成失败。
     timeoutMs: 300000,
+    // 允许她拿「这条聊天最近 30 分钟内收到的那张图」当参考（人家发图说「照这张画」时用）
+    chatImage: true,
     galleryShown: 20, // 面板「她的画作」显示最近几张（1~50；只影响显示，不删文件）
     // 自定义接法：url 里可以用 {prompt} {model} {size} {width} {height}；params 是参数名/值（值里也能用这些占位符）
     custom: { method: 'GET', url: '', bodyType: 'json', responsePath: '', params: [] },
@@ -409,6 +411,7 @@ export function normalize(raw) {
   c.imageGen.enabled = bool(c.imageGen.enabled, false)
   c.imageGen.ownerOnly = bool(c.imageGen.ownerOnly, true)
   c.imageGen.seeOwn = bool(c.imageGen.seeOwn, true)
+  c.imageGen.chatImage = bool(c.imageGen.chatImage, true)
   if (!/^\d{3,4}x\d{3,4}$/.test(String(c.imageGen.size))) c.imageGen.size = '1024x1024'
   c.imageGen.galleryShown = Math.min(50, Math.max(1, Math.round(Number(c.imageGen.galleryShown) || 20)))
   // 生图超时：别让手填的 0 / 负数 / 天数字把自己坑了（30 秒 ~ 15 分钟）
