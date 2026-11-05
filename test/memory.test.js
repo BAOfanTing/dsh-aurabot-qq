@@ -175,6 +175,26 @@ test('导入旧档案：挑出候选、去掉已经记过的，勾选后存进�
   assert.equal(mem.list('钓鱼')[0].source, 'import')
 })
 
+// 从别的 bot 搬档案时，条目要能带上「是谁」「什么标签」，否则召回按当前说话人加权那一步不认人
+test('导入旧档案：about / tags / chatId 原样带进来（搬别的 bot 的记忆时用）', () => {
+  const n = mem.importCommit([{
+    text: '阿强每周三去钓鱼，钓完在群里发照片',
+    about: '30000009',
+    aboutName: '阿强',
+    tags: ['旧档案', '人物印象'],
+    importance: 0.72,
+    chatId: 'group:9',
+  }])
+  assert.equal(n, 1)
+  const it = mem.list('钓鱼').find((x) => x.about === '30000009')
+  assert.ok(it, '能按 QQ 号找回来')
+  assert.equal(it.aboutName, '阿强')
+  assert.deepEqual(it.tags, ['旧档案', '人物印象'])
+  assert.equal(it.importance, 0.72)
+  assert.equal(it.chatId, 'group:9')
+  assert.equal(it.source, 'import')
+})
+
 test('遗忘曲线：没被想起的两个月左右淡掉；隔几天就被想起的记得久', async () => {
   const { retention, shouldForget } = await import('../src/features/memory.js')
   const now = Date.now()

@@ -229,10 +229,24 @@ export function createMemoryStore({ dsh, getConfig, hub, log }) {
     return uniq.slice(0, 80)
   }
 
-  /** 导入旧档案第二步：把勾选的候选存进记忆库。 */
+  /** 导入旧档案第二步：把勾选的候选存进记忆库。
+   *  about / tags / chatId 可选：从别的 bot 搬档案时能带上「这条是谁的」「什么标签」，
+   *  召回时按当前说话人加权才认得出人（早期只收 text/aboutName/importance）。 */
   function importCommit(items) {
     let n = 0
-    for (const c of items || []) if (add({ text: c.text, aboutName: c.aboutName || '', importance: c.importance ?? 0.5, source: 'import' }).id) n++
+    for (const c of items || []) {
+      if (!c || !c.text) continue
+      const r = add({
+        text: c.text,
+        aboutName: c.aboutName || '',
+        about: c.about || '',
+        tags: Array.isArray(c.tags) ? c.tags.filter(Boolean).slice(0, 5) : [],
+        importance: c.importance ?? 0.5,
+        source: 'import',
+        chatId: c.chatId || '',
+      })
+      if (r && r.id) n++
+    }
     return n
   }
 
