@@ -100,6 +100,16 @@ async function valueToBuffer (v) {
   throw new Error('生图接口返回的既不是图片地址也不是图片')
 }
 
+/**
+ * 一次生图最多等多久（面板可配；默认 5 分钟）。
+ * 以前这里写死 180 秒：本机大模型冷启动就要 20 秒上下、一张图常要 1~2 分钟，
+ * 正好卡在超时线上，于是被误判成「生图接口没有返回图片」。
+ */
+export function imageTimeoutMs (config) {
+  const ms = Math.round(Number(config && config.timeoutMs) || 300000)
+  return Math.min(900000, Math.max(30000, ms))
+}
+
 export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) {
   const fetch = fetchImpl || ((...args) => globalThis.fetch(...args))
   const auth = codexAuth || createCodexAuth({ log, fetchImpl: fetch })
@@ -125,6 +135,9 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
     return buf
   }
 
+  /** 一次生图最多等多久（面板可配；默认 5 分钟）。 */
+  const timeoutOf = (c) => imageTimeoutMs(c)
+
   /** OpenAI 兼容接口。 */
   async function viaOpenAI (c, prompt) {
     const base = String(c.baseUrl || '').replace(/\/+$/, '')
@@ -135,7 +148,7 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
       method: 'POST',
       headers,
       body: JSON.stringify({ model: c.model, prompt, size: c.size, n: 1, response_format: 'b64_json', image_size: c.size }),
-      signal: AbortSignal.timeout(180000),
+      signal: AbortSignal.timeout(timeoutOf(c)),
     })
     const j = await r.json().catch(() => ({}))
     if (!r.ok) throw new Error(j?.error?.message || j?.message || `HTTP ${r.status}`)
@@ -158,7 +171,7 @@ export function createImageGen({ getConfig, log, local, fetchImpl, codexAuth }) 
       method: req.method,
       headers: req.headers,
       body: req.body,
-      signal: AbortSignal.timeout(180000),
+      signal: AbortSignal.timeout(timeoutOf(c)),
     })
     const type = String(r.headers.get('content-type') || '')
     // 直接返回图片字节（pollinations 这类）

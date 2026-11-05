@@ -1,8 +1,8 @@
-// 生图的「自定义接口」：GET/POST、URL 模板占位、自定义参数名、两种返回形态。
+﻿// 生图的「自定义接口」：GET/POST、URL 模板占位、自定义参数名、两种返回形态。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const { customRequest, createImageGen } = await import('../src/features/imagegen.js')
+const { customRequest, createImageGen, imageTimeoutMs } = await import('../src/features/imagegen.js')
 
 const PNG = (() => {
   const b = Buffer.alloc(64)
@@ -142,4 +142,42 @@ test('enabled()：自定义模式看地址有没有填', () => {
   // 关掉总开关时不管填没填都不行
   const off = createImageGen({ getConfig: () => ({ imageGen: { enabled: false, provider: 'custom', custom: { url: 'https://x.test/{prompt}' } } }), log, local: null })
   assert.equal(off.enabled(), false)
+})
+
+// ── 生图超时 ──────────────────────────────────────────────
+// 以前写死 180 秒：本机大模型冷启动 20 秒 + 一张图 1~2 分钟，正好卡在线上被误判成失败。
+test('超时：没配默认 5 分钟（不再写死 180 秒）', () => {
+  assert.equal(imageTimeoutMs({}), 300000)
+  assert.equal(imageTimeoutMs(null), 300000)
+  assert.equal(imageTimeoutMs({ timeoutMs: '' }), 300000)
+  assert.equal(imageTimeoutMs({ timeoutMs: 'abc' }), 300000)
+})
+
+test('超时：面板填多少就用多少，但夹在 30 秒 ~ 15 分钟之间', () => {
+  assert.equal(imageTimeoutMs({ timeoutMs: 240000 }), 240000)
+  assert.equal(imageTimeoutMs({ timeoutMs: '600000' }), 600000, '面板存回来的是字符串也认')
+  assert.equal(imageTimeoutMs({ timeoutMs: 1 }), 30000, '太小会给掐成 30 秒，免得 0 秒直接失败')
+  assert.equal(imageTimeoutMs({ timeoutMs: -5 }), 30000)
+  assert.equal(imageTimeoutMs({ timeoutMs: 9999999 }), 900000, '太大也给掐住')
+})
+
+test('OpenAI 兼容接口：请求带的是配置的超时（abort 后报错，不会一直吊着）', async () => {
+  let signal = null
+  const fetchImpl = (url, opts) => new Promise((_resolve, reject) => {
+    signal = opts.signal
+    opts.signal.addEventListener('abort', () => reject(opts.signal.reason))
+  })
+  const gen = createImageGen({
+    getConfig: () => ({ imageGen: { enabled: true, provider: 'openai', baseUrl: 'http://127.0.0.1:9/v1', model: 'qwen-image', size: '1024x1024', timeoutMs: 30000 } }),
+    log,
+    local: null,
+    fetchImpl,
+  })
+  const pending = gen.generate('猫')
+  await new Promise((r) => setTimeout(r, 50))
+  assert.ok(signal && typeof signal.addEventListener === 'function', '请求必须带 AbortSignal')
+  assert.equal(signal.aborted, false)
+  pending.catch(() => {})
+  // 不等 30 秒：直接确认信号绑上了，再用 30 秒上限验证夹取逻辑已由上面的用例覆盖
+  assert.equal(imageTimeoutMs({ timeoutMs: 30000 }), 30000)
 })

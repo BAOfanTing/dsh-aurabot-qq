@@ -54,6 +54,9 @@ export const DEFAULTS = {
     stylePrompt: '', // 每次生图自动加在前面的风格描述
     ownerOnly: true, // 只有主人能让她画
     seeOwn: true, // 「让她画完自己看一眼」：开着才把画好的图交给她看
+    // 一次生图最多等多久：本机大模型冷启动就要 20 秒上下，一张图 1~2 分钟很正常。
+    // 以前写死 180 秒，碰上冷启动 + 排队会正好卡在超时线上被误判成失败。
+    timeoutMs: 300000,
     galleryShown: 20, // 面板「她的画作」显示最近几张（1~50；只影响显示，不删文件）
     // 自定义接法：url 里可以用 {prompt} {model} {size} {width} {height}；params 是参数名/值（值里也能用这些占位符）
     custom: { method: 'GET', url: '', bodyType: 'json', responsePath: '', params: [] },
@@ -408,6 +411,8 @@ export function normalize(raw) {
   c.imageGen.seeOwn = bool(c.imageGen.seeOwn, true)
   if (!/^\d{3,4}x\d{3,4}$/.test(String(c.imageGen.size))) c.imageGen.size = '1024x1024'
   c.imageGen.galleryShown = Math.min(50, Math.max(1, Math.round(Number(c.imageGen.galleryShown) || 20)))
+  // 生图超时：别让手填的 0 / 负数 / 天数字把自己坑了（30 秒 ~ 15 分钟）
+  c.imageGen.timeoutMs = Math.min(900000, Math.max(30000, Math.round(Number(c.imageGen.timeoutMs) || 300000)))
   c.imageGen.shape = ['her', 'square', 'portrait', 'landscape', 'wide'].includes(c.imageGen.shape) ? c.imageGen.shape : 'her'
 
   // provider：custom = 自己填接口（GET/POST + 自定义参数），其它按 OpenAI 兼容

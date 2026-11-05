@@ -17,7 +17,7 @@ export function createCodexImage({ auth, fetchImpl, log }) {
       return fetchImpl('https://chatgpt.com/backend-api/codex/images/generations', {
         method: 'POST',
         headers: { authorization: `Bearer ${access}`, 'chatgpt-account-id': accountId, accept: 'application/json', 'content-type': 'application/json', originator: 'pi', 'x-codex-image-turn-id': randomUUID(), 'user-agent': 'aurabot-qq' },
-        body: JSON.stringify(body), signal: AbortSignal.timeout(180000),
+        body: JSON.stringify(body), signal: AbortSignal.timeout(Number(config.timeoutMs) || 180000),
       })
     }
     log.info(`订阅生图请求：${body.model} / ${body.quality}`)
