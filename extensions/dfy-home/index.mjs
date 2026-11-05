@@ -159,7 +159,7 @@ function matchSpot(spots, place) {
 export default {
   id: 'dfy-home',
   name: '大肥鱼的家',
-  version: '1.2.0',
+  version: '1.3.0',
   api: 1,
   description: '接上 dfy-room 的小房间：说出她在哪个角落，拍第一视角发到 QQ，还能让她走去某个角落。',
   panel: 'panel.js',
@@ -199,7 +199,7 @@ export default {
         api.defineTool({
           name: 'home_where',
           description:
-            '查大肥鱼现在在自己家（那个小房间）里的哪个角落、正在做什么，并列出家里都有哪些地方（含"床在哪、书桌在哪"这种方位）。' +
+            '查大肥鱼现在在自己家的哪间屋子、哪个角落、正在做什么，并列出这个地方有哪些位置（含"床在哪、灶台在哪"这种方位）。' +
             '有人问她"你在哪""你在家干什么呢""床在哪儿"时用。',
           properties: {},
           execute: async () => {
@@ -213,7 +213,7 @@ export default {
               ok: true,
               message:
                 describe(st) +
-                (spots.length ? `\n家里这几个地方她随时能去：\n- ${spots.join('\n- ')}` : ''),
+                (spots.length ? `\n· ${st.sceneName || '这里'}能去的角落：\n- ${spots.join('\n- ')}` : ''),
               spot: st.location ? st.location.name : null,
               online: !!st.online,
             }
@@ -250,7 +250,7 @@ export default {
         api.defineTool({
           name: 'home_goto',
           description:
-            '让大肥鱼走到自己家里的某个角落。屋子分三间加一个院子，地点用中文名：' +
+            '让大肥鱼走到自己家里的某个角落（房子分成卧室 / 客厅 / 厨房 / 院子几个场景，走过去会自动换房间）。地点用中文名：' +
             '卧室——床边、窗边、衣柜旁、书桌前；客厅——沙发上、电视前、扶手椅、落地灯下；' +
             '厨房——水槽边、灶台前、冰箱前、餐桌旁；院子——门口、泳池里、躺椅旁、大树下、秋千上、遮阳伞下、花圃旁、篱笆边、院子里。' +
             '想让她换个地方、或者有人问"床呢""给我看看泳池""厨房长什么样"时用（photo 设 true 就会走过去再拍一张发出来）。',
@@ -315,6 +315,7 @@ export default {
         '有人想看、想让你发照片，用 home_photo；别人问"床呢""你那边有什么""带我去看看泳池"，' +
         '用 home_goto（place=那个地方，photo=true）——先真的走过去拍一张，再照工具返回的位置说话。\n' +
         '这些位置和照片都是你真实的状态：不要编造地点，也不要把一张照片说成别的地方；' +
+        '房间之间是一扇扇门：你自己走会穿过去，被别人指挥时 home_goto 也会先换房间再走过去。\n' +
         '工具说"页面没开着"或"没拍到"时，就照实说家里现在没开。'
     )
 
@@ -345,6 +346,8 @@ export default {
       return {
         ok: true,
         online: !!st.online,
+        scene: st.scene || (st.location && st.location.scene) || null,
+        sceneName: st.sceneName || (st.location && st.location.areaName) || null,
         location: st.location || null,
         clip: st.clip || null,
         asleep: !!st.asleep,
