@@ -2,6 +2,8 @@
 
 ## 未发布
 
+- **修（小黑盒）：打开「定时自己去逛」后每分钟报 `hasLogin is not defined`**：`site.js` 的 `tick` / `runDuty` 里调了一个从没定义过的 `hasLogin()`——小黑盒默认关着，`!c.enabled` 短路一直没走到这一行，所以这个空调用潜了很久；一旦打开开关 + 定时逛，第一分钟就炸（面板「模块」日志每分钟一条）。补上 `hasLogin()`（Cookie 里有 `pkey` 就算登录，扫码拿到的正是它），并新增 `test/heybox-tick.test.js`：没登录时不动、有 pkey 时跑一轮后台会话并记额度——已验证把这个函数改回未定义，两条测试立刻失败。
+
 - **修（面板）：小黑盒页报 `tokenText is not defined`**：上一版加「补 x_xhh_tokenid」输入框时漏了 `useState` 声明，点开「面板 → 平台 → 小黑盒」就整页报错（`node --check` 只查语法、查不出这种）。除了补上声明，还新增一条静态检查测试 `test/panel-client-lint.test.js`：把 `client/client.js` 里所有 `setXxx(...)` 的用法和 `useState` / `const` / 函数参数里的声明对一遍，用了没声明的直接失败——这类「只有点到那一页才炸」的错以后测试就能拦住（已验证：故意删掉那行声明，测试确实报 `setTokenText`）。
 - **修（小黑盒）：补令牌接口报 `Cannot access 'cookie' before initialization`**：`saveToken` 里写了 `const cookie = withHeyboxToken(cookie(), token)`，局部 `cookie` 把外层同名函数遮住了（TDZ）。改成把合并逻辑放在模块路由里（`withHeyboxToken(api.config().heybox.cookie, token)` → `saveCookie`），`site.js` 里那个多余的方法删掉；顺带补了「还没登录就先扫码」的提示。用隔离脚本真跑了一遍路由：合并后 `pkey` 原样保留、空值/带空格被拒、没登录被拦。
 

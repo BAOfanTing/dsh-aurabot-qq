@@ -89,6 +89,11 @@ export function createHeybox({ getConfig, hub, memory, log }) {
     } catch { return '' }
   }
 
+  /** 登录没登录：Cookie 里有 pkey 就算登录（扫码拿到的就是它）。定时任务靠这个把闸。 */
+  function hasLogin() {
+    return /pkey=|user_pkey=/.test(cookie())
+  }
+
   function getClient() {
     const c = cookie()
     if (!client || c !== clientCookie) {
