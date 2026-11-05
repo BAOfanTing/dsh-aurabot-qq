@@ -2431,8 +2431,46 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       )
     }
 
+    /** 扫码登录（B 站 / 小黑盒共用）：取二维码 → 每 2 秒问一次状态 → 成功后由宿主侧存配置。 */
+    function QrLogin({ startPath, tip, toast, onDone }) {
+      const [qr, setQr] = useState(null)
+      const [note, setNote] = useState('')
+      const [busy, setBusy] = useState(false)
+      const timer = useRef(null)
+      const stop = () => { if (timer.current) { clearTimeout(timer.current); timer.current = null } }
+      const reset = () => { stop(); setQr(null); setNote(''); setBusy(false) }
+      useEffect(() => stop, [])
+      const wait = (key, left) => {
+        timer.current = setTimeout(async () => {
+          const r = await post(startPath + '/poll', { key })
+          if (r.status === 'ok') { reset(); toast(r.message || '登录成功', 'ok'); if (onDone) onDone(); return }
+          if (r.status === 'error' || r.status === 'expired' || left <= 0) { stop(); setBusy(false); setNote(r.message || '二维码过期了，重新点一次'); return }
+          setNote(r.message || '')
+          wait(key, left - 1)
+        }, 2000)
+      }
+      const start = async () => {
+        reset()
+        setBusy(true)
+        setNote('正在取二维码…')
+        const r = await post(startPath, {})
+        if (!r.ok) { setBusy(false); setNote(r.message || '拿不到二维码'); return }
+        setQr(r)
+        setNote(r.message || '等手机扫码')
+        wait(r.key, Math.ceil((r.expiresInSec || 120) / 2))
+      }
+      return h('div', { style: { marginBottom: 10 } },
+        h('div', { className: 'ab-flex' },
+          h(Btn, { small: true, kind: 'primary', onClick: start, disabled: busy }, busy ? '重新扫码' : '扫码登录'),
+          note ? h('span', { className: 'ab-muted ab-small' }, note) : null,
+          qr ? h(Btn, { small: true, kind: 'ghost', onClick: reset }, '收起') : null),
+        qr ? h('div', { style: { marginTop: 8 } },
+          h('img', { src: qr.image, alt: '登录二维码', width: 180, height: 180, style: { background: '#fff', padding: 6, borderRadius: 8, display: 'block' } }),
+          h('div', { className: 'ab-muted ab-small', style: { marginTop: 6 } }, tip || '手机扫码后确认登录，这里会自动保存 Cookie')) : null)
+    }
+
 /** B 站 Cookie：SESSDATA 和 bili_jct 分两个框填（前缀已经写好），可以显示 / 隐藏；粘整串也行，会自动拆开。 */
-    function BiliCookie({ draft, setDraft }) {
+    function BiliCookie({ draft, setDraft, toast, onDone }) {
       const [show, setShow] = useState(false)
       const b = draft.bili
       const field = (key, prefix, setKey, hintKey, ph) => h('div', { className: 'ab-flex', style: { flexWrap: 'nowrap', marginBottom: 6 } },
@@ -2442,8 +2480,9 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           placeholder: b[setKey] ? '已保存（结尾 ' + (b[hintKey] || '…') + '），不改就留空' : ph,
           onChange: (e) => setDraft(setPath(draft, 'bili.' + key, e.target.value.trim())),
         }))
-      return h(Row, { label: 'B 站 Cookie', hint: '电脑浏览器登录 bilibili.com → F12 → 「应用」（Application）→ Cookie → bilibili.com，分别复制 SESSDATA 和 bili_jct 这两行的「值」。也可以直接粘整串 Cookie，会自动拆开。只存在本机；不填也能看视频，但看不到 AI 字幕、不能评论和回复。建议用小号' },
+      return h(Row, { label: 'B 站 Cookie', hint: '最省事：点「扫码登录」，用手机 B 站 App 扫一下就自动填好。也可以手动填——电脑浏览器登录 bilibili.com → F12 → 「应用」（Application）→ Cookie → bilibili.com，分别复制 SESSDATA 和 bili_jct 这两行的「值」，或者直接粘整串 Cookie 自动拆开。只存在本机；不填也能看视频，但看不到 AI 字幕、不能评论和回复。建议用小号' },
         h('div', { style: { flex: 1 } },
+          h(QrLogin, { startPath: '/bili/login/qr', tip: 'B 站 App → 我的 → 右上角扫一扫，扫完在手机上点确认', toast, onDone }),
           field('sessdata', 'SESSDATA=', 'sessdataSet', 'sessdataHint', '粘贴 SESSDATA 的值'),
           field('biliJct', 'bili_jct=', 'biliJctSet', 'biliJctHint', '粘贴 bili_jct 的值'),
           h('div', { className: 'ab-flex' },
@@ -2683,7 +2722,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const acct = s && s.account
       return h('div', { className: 'ab-grid' },
         h(Card, { title: '刷 B 站', right: f.sw('bili.enabled'), desc: '她会定时去 B 站刷几个视频：从她的兴趣、记忆里你喜欢的东西和下面的关键词里挑方向去搜，读简介、字幕和热评，再按自己的性格决定评不评论、要不要私聊分享给你、记住什么。看过的、评过的都记成她的经历，聊天时会自然提起。你在 QQ 里发 B 站链接或分享卡片，她也能点进去看完再聊。' },
-          h(BiliCookie, { draft, setDraft }),
+          h(BiliCookie, { draft, setDraft, toast, onDone: load }),
           h('div', { className: 'ab-flex', style: { marginTop: 4 } },
             h(Btn, { small: true, onClick: async () => { const r = await get('/bili/account'); setS({ ...(s || {}), account: r }) } }, '检查登录'),
             acct ? h('span', { className: 'ab-small', style: { color: acct.isLogin ? 'var(--ab-ok)' : 'var(--ab-warn)' } }, acct.isLogin ? '已登录：' + acct.uname : '没登录（只能看，不能评论）') : null),
@@ -2871,6 +2910,7 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
       const [busy, setBusy] = useState('')
       const [hot, setHot] = useState(null)
       const [cookieText, setCookieText] = useState('')
+      const [tokenText, setTokenText] = useState('')
       const load = () => get('/heybox/state').then(setS)
       useEffect(() => { load() }, [])
       const act = (path, label, body) => async () => {
@@ -2904,6 +2944,14 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
         if (r.ok) setCookieText('')
         load()
       }
+      const saveToken = async () => {
+        setBusy('token')
+        const r = await post('/heybox/token', { token: tokenText })
+        setBusy('')
+        toast(r.message || (r.ok ? '存好了' : '没成功'), r.ok === false ? 'err' : 'ok')
+        if (r.ok) setTokenText('')
+        load()
+      }
       const acct = s && s.account
       const acctText = !acct || !acct.checkedAt ? h('span', { className: 'ab-small ab-muted' }, '还没检查过') :
         h('span', { className: 'ab-small', style: { color: acct.loggedIn ? 'var(--ab-ok)' : 'var(--ab-warn)' } },
@@ -2917,8 +2965,9 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
           title: '刷小黑盒', right: f.sw('heybox.enabled'),
           desc: '用你的小黑盒账号逛游戏社区：定时看信息流、读帖子正文和热评，按性格决定点不点赞、评不评论；她自己会写帖子（先看热榜找角度，再看社区高赞帖在聊什么，配图走小黑盒图床），发完把链接报给你。写操作各有权限（「权限」页，默认仅主人），每天有额度上限。',
         },
-          h(Row, { label: '小黑盒账号', hint: '从浏览器登录后把整串 Cookie 粘到下面。pkey 必须有；想让它能点赞评论发帖，还要有 x_xhh_tokenid（F12 → Application → Cookies 里能复制到）' },
+          h(Row, { label: '小黑盒账号', hint: '最省事：点「扫码登录」，用手机小黑盒 App 扫一下就自动填好。也可以手动粘整串 Cookie——pkey 必须有；想让它能点赞评论发帖，还要有 x_xhh_tokenid（F12 → Application → Cookies 里能复制到）' },
             h('div', null,
+              h(QrLogin, { startPath: '/heybox/login/qr', tip: '小黑盒 App → 我的 → 右上角扫一扫，扫完在手机上点确认', toast, onDone: load }),
               h('div', { className: 'ab-flex' },
                 h(Btn, { small: true, onClick: checkAccount, disabled: !!busy }, busy === 'account' ? '检查中…' : '检查登录'),
                 acctText),
@@ -2932,7 +2981,18 @@ h(Card, { title: '群里什么时候必回', desc: '被 @、有人引用回复�
                 h(Btn, { small: true, kind: 'primary', onClick: saveCookie, disabled: !!busy }, busy === 'cookie' ? '保存中…' : '保存 Cookie')),
               s && s.hasCookie
                 ? h('div', { className: 'ab-small', style: { marginTop: 6, color: s.hasToken ? 'var(--ab-ok)' : 'var(--ab-warn)' } },
-                  s.hasToken ? '✓ 有 pkey 和 x_xhh_tokenid，读写都能用' : '⚠ 只有 pkey，没有 x_xhh_tokenid：点赞 / 评论 / 发帖大概率会被拒')
+                  s.hasToken ? '✓ 有 pkey 和 x_xhh_tokenid，读写都能用' : '⚠ 有 pkey 了，但缺 x_xhh_tokenid：点赞 / 评论 / 发帖大概率会被拒（这个令牌是网页上数美设备指纹算的，扫码拿不到，只能从浏览器补一次）')
+                : null,
+              s && s.hasCookie && !s.hasToken
+                ? h('div', { style: { marginTop: 6 } },
+                  h('div', { className: 'ab-flex' },
+                    h('input', {
+                      className: 'ab-input wide', spellCheck: false, value: tokenText,
+                      placeholder: '粘贴 x_xhh_tokenid 的值（浏览器登录 xiaoheihe.cn → F12 → Application → Cookies）',
+                      onChange: (e) => setTokenText(e.target.value.trim()),
+                    }),
+                    h(Btn, { small: true, kind: 'primary', onClick: saveToken, disabled: !tokenText || !!busy }, busy === 'token' ? '保存中…' : '存令牌')),
+                  h('div', { className: 'ab-muted ab-small', style: { marginTop: 4 } }, '只补这一个值就行，扫码拿到的 pkey 会原样留着；不补也能逛帖子和看热评'))
                 : null)),
         ),
         h(Card, {

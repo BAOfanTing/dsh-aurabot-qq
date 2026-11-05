@@ -2,6 +2,14 @@
 
 ## 未发布
 
+- **修（面板）：小黑盒页报 `tokenText is not defined`**：上一版加「补 x_xhh_tokenid」输入框时漏了 `useState` 声明，点开「面板 → 平台 → 小黑盒」就整页报错（`node --check` 只查语法、查不出这种）。除了补上声明，还新增一条静态检查测试 `test/panel-client-lint.test.js`：把 `client/client.js` 里所有 `setXxx(...)` 的用法和 `useState` / `const` / 函数参数里的声明对一遍，用了没声明的直接失败——这类「只有点到那一页才炸」的错以后测试就能拦住（已验证：故意删掉那行声明，测试确实报 `setTokenText`）。
+- **修（小黑盒）：补令牌接口报 `Cannot access 'cookie' before initialization`**：`saveToken` 里写了 `const cookie = withHeyboxToken(cookie(), token)`，局部 `cookie` 把外层同名函数遮住了（TDZ）。改成把合并逻辑放在模块路由里（`withHeyboxToken(api.config().heybox.cookie, token)` → `saveCookie`），`site.js` 里那个多余的方法删掉；顺带补了「还没登录就先扫码」的提示。用隔离脚本真跑了一遍路由：合并后 `pkey` 原样保留、空值/带空格被拒、没登录被拦。
+
+- **修（小黑盒扫码）：扫码确认后拿不到 pkey**：第一版只认 `result.pkey`，实测扫描后接口回来的字段并不在这个位置，面板会停在「扫码成功了，但没拿到 pkey」。现在取 Cookie 不再猜死字段位置：在整份返回里按名字找 `pkey` / `user_pkey` / `heybox_id`（最多翻三层，`result` 里没有就整体再找一遍），同时接住响应头里的 `Set-Cookie`（网页端登录后也是这么写 `document.cookie` 的）；取码与问状态之间还会带着同一份会话 cookie。真拿不到时不再假装成功——面板直接列出接口返回了哪些字段（值不显示），日志里留一条截断的原始返回，方便一眼看出接口挪到哪儿去了。新增 4 条测试（深层嵌套、只在 `Set-Cookie` 里、会话 cookie 透传、失败时带字段清单）。
+- **补（小黑盒扫码）：`x_xhh_tokenid` 扫码拿不到 → 面板留一个只填这一个值的口子**：查清了——它不是登录返回的字段，而是网页上**数美设备指纹 SDK**（`static.fengkongcloud.com` → `POST /rc/box_data/callback` → `result.heybox_token`）算出来的设备凭证，不跑浏览器拿不到。所以扫码登录只给 pkey（逛帖子、看热评、看热榜都正常）；缺令牌时面板会说明原因，并给一个只有一格的输入框「存令牌」，保存时只替换这一个键、扫码拿到的 pkey 原样留着（接口 `/heybox/token`，实现是 `withHeyboxToken`）。新增 2 条测试（只换令牌不动其他键、空值或带空格分号的不收）。
+
+- **新增：B 站和小黑盒都能扫码登录了**：面板「B站」页的 B 站 Cookie 卡、「小黑盒」页的账号卡各加了一个「扫码登录」——点一下出二维码，用手机 App 扫完在手机上确认，Cookie 自动存进配置。两站都走网页版的公开接口、不用开浏览器：B 站是 `passport-login/web/qrcode` 的 generate + poll（86101 等扫码 / 86090 已扫待确认 / 86038 过期），小黑盒是 `get_qrcode_url` + `qr_state`（wait / ready / ok，成功后还会用新登录态再要一次 `x_xhh_tokenid`；拿不到就只存 pkey，并在面板上明说这样只能读）。二维码是插件自己画的：新增 `src/core/qr.js`（字节模式 + 纠错级别 M + 版本 1~10 + PNG 自编码，零第三方依赖），直接生成 data URL 塞进面板 `<img>`，**不经过任何在线二维码服务**，登录票据不出本机。手动填 Cookie 的老路子保留。新增 19 条测试（编码器结构 / 已知矩阵 / 版本升级 / 超长报错；两站的取码、状态映射、Cookie 解析与各种兜底）。
+
 - **新增：照着聊天里的图画（图生图）**：`qq_draw_image` 多一个 `useChatImage` 开关，打开就用**这条聊天最近 30 分钟内收到的那张图**当参考（主人发、群友发都算，表情也行；插件先缩到长边 1024 的 JPEG 再编成 data URI）。她看语境自己判断用不用——人家发图说「照这张画」「把这张改成水彩风」才开，正常描述画面不会乱拉别人的图。没图 / 图片链接过期 / 面板关掉（「生图」页「能照着聊天里的图画」，默认开）都会给一句能说出口的话，不硬画。请求体带 `image` 字段走 OpenAI 兼容 / 自定义（参数值可用 `{image}`）两条接法；订阅接法不支持，会直接说不行。本地接口模板同时收到 `image`（`src/local/templates/image.mjs` 的约定已更新）。新增 7 条测试（请求体透传、工具取图、没图/关了/取不到三种失败）。
 - **修（生图）：超时不再写死 180 秒**：接本机大模型时冷启动就要 20 秒上下、一张图常要 1~2 分钟，正好卡在 180 秒线上，表现是「画到一半报：生图接口没有返回图片」。新增 `imageGen.timeoutMs`（面板「生图」页「最长等多久」，60~600 秒，默认 300 秒；配置层夹在 30 秒 ~ 15 分钟），OpenAI 兼容 / 自定义 / 订阅三条接法都按它设 `AbortSignal`。新增 3 条测试（默认值、夹取边界、请求确实带 AbortSignal）。
 

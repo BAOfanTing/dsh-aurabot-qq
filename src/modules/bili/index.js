@@ -2,6 +2,7 @@
 
 import { readFileSync } from 'node:fs'
 import { createBili } from '../../bili/duty.js'
+import { createBiliQrLogin } from '../../bili/login.js'
 import { defineTool, str } from '../../tools/tools.js'
 import { profileToolVisible, profilePermits } from '../../chat/access.js'
 import { avatarSource } from '../profile/index.js'
@@ -12,7 +13,7 @@ export default {
   version: '1.1.0',
   description: '看别人发的 B 站视频；定时自己刷、评论、回评论；抽帧看画面、发截图；按权限改自己的头像 / 签名（bili_watch / bili_comment / qq_send_shot / bili_set_avatar / bili_set_sign）',
   tab: 'bili',
-  files: ['bili/duty.js', 'bili/api.js', 'bili/vision.js', 'bili/shots.js'],
+  files: ['bili/duty.js', 'bili/api.js', 'bili/vision.js', 'bili/shots.js', 'bili/login.js'],
   setup(api) {
     const { hub } = api.core
     const lastImage = new Map() // chatId → 最近一张图的网址（给 bili_set_avatar 的 last 用）
@@ -106,6 +107,30 @@ export default {
 
     api.route('/bili/state', async () => ({ ok: true, ...bili.state(), account: await bili.account() }))
     api.route('/bili/account', async () => bili.account(true))
+    // 扫码登录：面板取二维码 → 手机扫码 → 这里轮询状态，成功后直接把 Cookie 存进配置
+    const qrLogin = createBiliQrLogin({ log: api.log })
+    api.route('/bili/login/qr', async () => {
+      try {
+        return { ok: true, ...(await qrLogin.start()), message: '用 B 站 App 扫这个码' }
+      } catch (error) {
+        return { ok: false, message: '拿不到二维码：' + error.message }
+      }
+    })
+    api.route('/bili/login/qr/poll', async (req) => {
+      const body = await api.core.http.body(req).catch(() => ({}))
+      const key = String(body?.key || '')
+      if (!key) return { ok: false, status: 'error', message: '少了二维码 key' }
+      try {
+        const r = await qrLogin.poll(key)
+        if (r.status !== 'ok') return { ok: r.status !== 'error', status: r.status, message: r.message }
+        // sessdata / biliJct 存进配置，normalize 会把 cookie 拼回给接口用
+        api.setConfig((cur) => ({ ...cur, bili: { ...cur.bili, sessdata: r.cookie.SESSDATA || '', biliJct: r.cookie.bili_jct || '', cookie: '' } }))
+        api.log.info('B 站扫码登录：Cookie 已保存')
+        return { ok: true, status: 'ok', message: '登录成功，Cookie 已保存' }
+      } catch (error) {
+        return { ok: false, status: 'error', message: '查扫码状态失败：' + error.message }
+      }
+    })
     api.route('/bili/run', async () => bili.run({ force: true }))
     api.route('/bili/replies', async () => bili.checkReplies())
     // 截图库（面板里看全部、手动删）

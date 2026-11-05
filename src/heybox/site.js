@@ -18,6 +18,22 @@ const HOME = process.env.USERPROFILE || os.homedir()
 const CRED_DIR = path.join(HOME, '.heybox-ai')
 const CRED_FILE = path.join(CRED_DIR, 'credentials.json')
 
+/**
+ * 往已有的 Cookie 串里塞 / 替换 x_xhh_tokenid。
+ * 扫码登录只能拿到 pkey——这个令牌是网页上数美设备指纹 SDK 算出来的（/rc/box_data/callback），
+ * 不跑浏览器拿不到，所以给主人留一个「只补这一个值」的口子，不用整串重贴。
+ */
+export function withHeyboxToken(cookie, token) {
+  const t = String(token || '').trim()
+  if (!t || /[;\s]/.test(t)) return ''
+  const rest = String(cookie || '')
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s && !s.startsWith('x_xhh_tokenid='))
+  rest.push('x_xhh_tokenid=' + t)
+  return rest.join('; ')
+}
+
 const DEFAULT_STATE = {
   account: { checkedAt: 0, nickname: '', heyboxId: '', loggedIn: false, message: '' },
   quota: { date: '', like: 0, comment: 0, post: 0, browse: 0 },

@@ -3,7 +3,8 @@
 // 接口签名 / cosm 上传等实现在 src/heybox/ 里（api.js 签名与请求，site.js 业务）。
 // 写操作各有权限（面板「权限」页），默认仅主人；发帖前有自检清单（见面板与规则）。
 
-import { createHeybox } from '../../heybox/site.js'
+import { createHeybox, withHeyboxToken } from '../../heybox/site.js'
+import { createHeyboxQrLogin } from '../../heybox/login.js'
 import { defineTool, str } from '../../tools/tools.js'
 import { profileToolVisible, profilePermits } from '../../chat/access.js'
 
@@ -13,7 +14,7 @@ export default {
   version: '1.0.0',
   description: '小黑盒游戏社区：看信息流、读帖子热评、点赞、评论、发帖（文章模式可带图）、删自己的帖；发帖前先看热榜找角度（heybox_feed / heybox_watch / heybox_like / heybox_comment / heybox_post / heybox_hot / heybox_search / heybox_topics / heybox_delete）',
   tab: 'heybox',
-  files: ['heybox/api.js', 'heybox/site.js'],
+  files: ['heybox/api.js', 'heybox/site.js', 'heybox/login.js'],
   setup(api) {
     const { hub, http } = api.core
     const hb = createHeybox({ getConfig: api.config, hub, memory: api.lazy('memory'), log: api.log })
@@ -130,6 +131,42 @@ export default {
       // saveCookie 只负责校验，真正落配置还得经过 setConfig（面板存其他设置时也一样）
       if (r.ok) api.setConfig((cur) => ({ ...cur, heybox: { ...cur.heybox, cookie: r.cookie, enabled: cur.heybox.enabled } }))
       return { ok: r.ok, message: r.message }
+    })
+    // 扫码登录：面板取二维码 → 小黑盒 App 扫码 → 这里轮询状态，成功后直接把 Cookie 存进配置
+    const qrLogin = createHeyboxQrLogin({ log: api.log })
+    api.route('/heybox/login/qr', async () => {
+      try {
+        return { ok: true, ...(await qrLogin.start()), message: '用小黑盒 App 扫这个码' }
+      } catch (error) {
+        return { ok: false, message: '拿不到二维码：' + error.message }
+      }
+    })
+    api.route('/heybox/login/qr/poll', async (req) => {
+      const body = await api.core.http.body(req).catch(() => ({}))
+      const key = String(body?.key || '')
+      if (!key) return { ok: false, status: 'error', message: '少了二维码 key' }
+      try {
+        const r = await qrLogin.poll(key)
+        if (r.status !== 'ok') return { ok: r.status !== 'error', status: r.status, message: r.message }
+        const saved = hb.saveCookie(r.cookie)
+        if (!saved.ok) return { ok: false, status: 'error', message: '登录成功了，但 Cookie 没过校验：' + saved.message }
+        api.setConfig((cur) => ({ ...cur, heybox: { ...cur.heybox, cookie: saved.cookie } }))
+        api.log.info('小黑盒扫码登录：Cookie 已保存')
+        return { ok: true, status: 'ok', message: r.message }
+      } catch (error) {
+        return { ok: false, status: 'error', message: '查扫码状态失败：' + error.message }
+      }
+    })
+    // 扫码只能拿到 pkey；x_xhh_tokenid 由网页的数美设备指纹算出来，拿不到 → 单独让主人补这一个值
+    api.route('/heybox/token', async (req) => {
+      const b = await http.body(req).catch(() => ({}))
+      const cur = api.config().heybox.cookie || ''
+      if (!cur) return { ok: false, message: '还没登录：先扫码或者填整串 Cookie' }
+      const merged = withHeyboxToken(cur, String(b?.token ?? ''))
+      if (!merged) return { ok: false, message: '令牌不对：应该是一串没有空格和分号的字符' }
+      const r = hb.saveCookie(merged)
+      if (r.ok) api.setConfig((c) => ({ ...c, heybox: { ...c.heybox, cookie: r.cookie } }))
+      return { ok: r.ok, message: r.ok ? '令牌存好了，写操作也能用' : r.message }
     })
     api.route('/heybox/run', async () => hb.browse())
     api.route('/heybox/clear-quota', async () => hb.clearQuota())
