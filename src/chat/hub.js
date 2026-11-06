@@ -32,6 +32,7 @@ import { grantOwner } from '../core/workspace-move.js'
 import { withPromptCapture, currentPromptSources, memoryPromptRanges } from '../security/leak-guard.js'
 import { noticeText } from './notices.js'
 import { matchesMemoryKeyword, parseMemoryCommand } from '../features/memory.js'
+import { recordUsage, moduleLabel } from '../core/usage.js'
 
 // QQ 会话的工作区目录，第一次收到消息时自动创建。面板「连接」页能改（config.workspaceDir，#32）；
 // 没填就用环境变量 AURABOT_WORKSPACE，再没有：老安装沿用 C:\Aurabot\qq-chats，新安装放在用户目录下（不用往 C 盘根目录写）
@@ -89,6 +90,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
   const mounts = new Set() // 可遍历的挂载记录：插件卸载时要撤掉仍存活会话里的注册
   const toolDisposers = new Map() // `${sessionKey}|${工具名}` → disposer，防注册表里残留同名工具时挂不上（#90）
   const sessionToChat = new Map() // sessionKey → chatId
+  const sessionTarget = new Map() // sessionKey → { provider, model }：记 token 用量时按这次会话用的模型计价
   const turnState = new Map() // sessionKey → { lastTurn, text, images, senders:Set, system?: {resolve, reject, timedOutAt} }
   const systemTurns = new Map() // chatId → 当前后台轮次，权限档位变化时也不能绕过它
   const systemStarting = new Set() // 建会话和恢复期间，同一个聊天只能有一个调用
@@ -441,6 +443,7 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
       }
     }
     sessionToChat.set(sessionKey(sid), chat.chatId)
+    if (target) sessionTarget.set(sessionKey(sid), { provider: target.provider, model: target.model })
     mount(agent, chat, level)
     return { agent, sessionId: sid, level }
   }
@@ -1062,6 +1065,21 @@ export function createHub({ dsh, getConfig, log, onebot, stickers, tts, buildToo
     }
     if (event.type === 'assistant/message') {
       const d = event.data || {}
+      // 用量：DSH 把每次模型调用的 token 数记在这个事件里（含重试），按「聊天」记账、按 DeepSeek 价估花费。
+      // 系统会话（刷小黑盒 / 日记 / 目的引擎那种）算到「后台会话」，别跟聊天混在一起。
+      if (d.usage) {
+        const target = sessionTarget.get(key)
+        try {
+          recordUsage({
+            module: moduleLabel(chatId),
+            chat: chatId,
+            provider: target?.provider || '',
+            model: target?.model || '',
+            usage: d.usage,
+            at: event.time,
+          })
+        } catch (error) {}
+      }
       if (d.interrupted) return
       // 最后一条 assistant 消息才是本轮回复；总是覆盖（空也覆盖），
       // 否则最后一条是空的（或只有工具调用）时会拿上一条过程性文字补发，把思考发出去。
