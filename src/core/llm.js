@@ -135,19 +135,25 @@ async function runStream (llm, params, onUsage) {
   let out = ''
   const types = {}
   let finish = ''
-  for await (const chunk of llm.stream(params)) {
-    if (!chunk) continue
-    types[chunk.type] = (types[chunk.type] || 0) + 1
-    // 用量块一到就记（后面即使报错也已经计费了）；记的是数字，不含聊天内容
-    if (chunk.type === 'usage' && onUsage) { try { onUsage(chunk.usage) } catch (error) {} }
-    if (chunk.type === 'finish') finish = JSON.stringify(chunk.reason || {}).slice(0, 120)
-    if (chunk.type === 'text-delta') out += chunk.text
-    if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
-      const f = chunk.reason.failure || {}
-      const error = new Error('模型报错：' + (f.message || f.code || '未知'))
-      if (f.code) error.code = f.code
-      throw error
+  let usage = null
+  try {
+    for await (const chunk of llm.stream(params)) {
+      if (!chunk) continue
+      types[chunk.type] = (types[chunk.type] || 0) + 1
+      // 有的适配器会分片上报用量：只留最后一次，保证「一次调用只记一行」，不会重复计费
+      if (chunk.type === 'usage') usage = chunk.usage
+      if (chunk.type === 'finish') finish = JSON.stringify(chunk.reason || {}).slice(0, 120)
+      if (chunk.type === 'text-delta') out += chunk.text
+      if (chunk.type === 'finish' && chunk.reason && chunk.reason.kind === 'error') {
+        const f = chunk.reason.failure || {}
+        const error = new Error('模型报错：' + (f.message || f.code || '未知'))
+        if (f.code) error.code = f.code
+        throw error
+      }
     }
+  } finally {
+    // 报错也已经计费了，所以在 finally 里记，且一次调用最多一行；记的是数字，不含聊天内容
+    if (usage && onUsage) { try { onUsage(usage) } catch (error) {} }
   }
   if (!out.trim()) lastEmpty = `结束原因 ${finish || '无'}，数据块 ${JSON.stringify(types)}`
   return out.trim()
