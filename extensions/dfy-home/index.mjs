@@ -159,7 +159,7 @@ function matchSpot(spots, place) {
 export default {
   id: 'dfy-home',
   name: '大肥鱼的家',
-  version: '1.3.0',
+  version: '1.4.0',
   api: 1,
   description: '接上 dfy-room 的小房间：说出她在哪个角落，拍第一视角发到 QQ，还能让她走去某个角落。',
   panel: 'panel.js',
@@ -186,6 +186,33 @@ export default {
       if (!sent) throw new Error('照片拍好了，但没有发到 QQ（检查总开关、试运行和连接）')
       return { where, bytes: buf.length }
     }
+
+    // ---------------- 活动状态：她在回消息时，游戏里会坐到书桌前看电脑 ----------------
+    let lastNudge = 0;
+    let lastState = '';
+    function nudgeActivity(next, ttl = 90000) {
+      if (api.settings().enabled === false) return;
+      const now = Date.now();
+      // 同状态 1.5 秒内只发一次，避免一轮对话刷屏
+      if (next === lastState && now - lastNudge < 1500) return;
+      lastNudge = now;
+      lastState = next;
+      tryCall(() => roomJson(api, '/api/home/command', { method: 'POST', body: { type: 'activity', state: next, ttl } }))
+        .then((r) => {
+          if (!r.ok) api.log.debug && api.log.debug('活动状态没推过去：' + r.message);
+        })
+        .catch(() => {});
+    }
+
+    // 收到消息 → 她"坐到书桌前"；发出消息 → 起身
+    api.on('message', (msg) => {
+      if (msg && msg.kind !== 'system') nudgeActivity('chatting');
+      return false; // 不接管，照常交给聊天中枢
+    });
+    api.on('send', () => {
+      nudgeActivity('idle');
+      // 不返回值 = 不改写这条消息
+    });
 
     // ---------------- 给她用的工具 ----------------
     api.tool((where) => {
@@ -245,6 +272,32 @@ export default {
           })
         )
       }
+
+      tools.push(
+        api.defineTool({
+          name: 'home_desk',
+          description:
+            '让大肥鱼坐到书桌前看电脑，或者从书桌前站起来。她说自己“在回消息 / 在写东西 / 在看电脑”时用 sit，' +
+            '演完或不想演了用 stand。',
+          properties: {
+            state: { type: 'string', description: 'sit = 坐到书桌前，stand = 站起来', enum: ['sit', 'stand'] },
+            minutes: { type: 'number', description: '坐多久（分钟，默认 3）' },
+          },
+          required: ['state'],
+          execute: async ({ state: st, minutes }) => {
+            const sit = String(st || 'sit') !== 'stand';
+            const r = await tryCall(() =>
+              roomJson(api, '/api/home/command', {
+                method: 'POST',
+                body: { type: 'activity', state: sit ? 'chatting' : 'idle', ttl: Math.round((Number(minutes) || 3) * 60000) },
+              })
+            )
+            if (!r.ok) return { ok: false, message: r.message }
+            await sleep(1500)
+            return { ok: true, message: sit ? '她已经坐到书桌前看电脑了' : '她从书桌前站起来了' }
+          },
+        })
+      )
 
       tools.push(
         api.defineTool({
@@ -316,6 +369,8 @@ export default {
         '用 home_goto（place=那个地方，photo=true）——先真的走过去拍一张，再照工具返回的位置说话。\n' +
         '这些位置和照片都是你真实的状态：不要编造地点，也不要把一张照片说成别的地方；' +
         '房间之间是一扇扇门：你自己走会穿过去，被别人指挥时 home_goto 也会先换房间再走过去。\n' +
+        '你回消息的时候会坐到卧室书桌前看电脑（别人问你"在干嘛"可以说在敲电脑）；' +
+        '想主动坐过去/站起来就调 home_desk。\n' +
         '工具说"页面没开着"或"没拍到"时，就照实说家里现在没开。'
     )
 
