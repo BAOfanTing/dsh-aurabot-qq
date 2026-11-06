@@ -333,7 +333,8 @@ export function createModules({ ctx, core, getConfig, setConfig, logger, version
       sendFile: writable('sendFile', (chatId, file, name) => core.hub.sendFile(String(chatId), file, name)),
       // 把一个音频文件当语音条发出去（不走念文字）
       sendVoiceFile: writable('sendVoiceFile', (chatId, file, note) => core.hub.sendVoiceFile(String(chatId), file, note || `[${id}] 语音`)),
-      ask: writable('ask', (opts) => core.ask(typeof opts === 'string' ? { text: opts } : opts)),
+      // module: id —— 这次模型调用的用量记到哪个模块名下（面板「概览」的 token 明细）
+      ask: writable('ask', (opts) => core.ask(typeof opts === 'string' ? { text: opts, module: id } : { ...opts, module: id })),
       think: writable('think', (prompt, opts = {}) => core.hub.runSystemTurn(`ext-${id}`, opts.title || def.name || id, String(prompt), opts)),
       onebot: writable('onebot', (action, params, opts) => core.onebot.call(action, params, opts)),
       dshTool: (tool) => { if (!active()) return () => {}; rec.dshTools.push(tool); core.bridge?.refresh(); return () => { remove(rec.dshTools, tool); core.bridge?.refresh() } },
