@@ -184,3 +184,44 @@ test('旧数据没记模型名：按 DeepSeek flash 价估，不能算成「未�
   assert.ok(r.current.assumedCalls >= 1, '要能数出有几条是按默认价估的')
   assert.ok(r.current.cost > 0, '按默认价估之后要有花费')
 })
+
+test('口径：inputTokens 是未命中缓存的输入，cacheReadTokens 是命中的（两边相加才是总输入）', () => {
+  // 对着 DSH 会话投影核对过：投影里就是 uncachedInputTokens / cacheReadTokens 两个字段，
+  // 实测后者能是前者的几十倍。所以：
+  //   总输入 = inputTokens + cacheReadTokens
+  //   缓存命中率 = cacheReadTokens / (两者之和)
+  // 按「inputTokens 已含缓存」算会把命中率算成 100%、未命中算成 0，花费少算一大截。
+  const at = Date.UTC(2026, 10, 10, 4, 0, 0)
+  usage.recordUsage({
+    module: '聊天',
+    model: 'deepseek-v4.1-flash',
+    usage: { inputTokens: 1000, cacheReadTokens: 9000, outputTokens: 500 },
+    at,
+  })
+  const r = usage.usageReport({ now: at + 60_000, range: 'today' })
+  const t = r.ranges.today
+  assert.equal(t.promptTokens, 10000, '总输入 = 未命中 1000 + 命中 9000')
+  assert.equal(t.cachedTokens, 9000, '命中数就是 cacheReadTokens')
+  assert.equal(t.completionTokens, 500)
+  assert.equal(t.totalTokens, 10500)
+  assert.equal(t.cacheHitRate, 0.9, '命中率按两者之和算')
+  // 花费也按三段分别取价（空闲时段：未命中 1 元/百万、命中 0.02、输出 4）
+  const expect = (1000 * 1 + 9000 * 0.02 + 500 * 4) / 1_000_000
+  assert.ok(Math.abs(t.cost - expect) < 1e-9, `实际 ${t.cost} 期望 ${expect}`)
+})
+
+test('工具归属：聊天里调用某模块的工具时，它的消耗算到那个功能名下', () => {
+  // 聊天里让她刷 B 站 → 调 bili_watch → 下一步读字幕/热评算「刷 B 站」，不全是「聊天」
+  assert.equal(usage.moduleOfTool('bili_watch'), '刷 B 站')
+  assert.equal(usage.moduleOfTool('bili_comment'), '刷 B 站')
+  assert.equal(usage.moduleOfTool('bili_danmaku'), '刷 B 站')
+  // bili 模块注册的 B 站截图工具，名字是 qq_ 开头，得靠例外表
+  assert.equal(usage.moduleOfTool('qq_send_shot'), '刷 B 站')
+  assert.equal(usage.moduleOfTool('qq_draw_image'), '生图')
+  // 聊天本身的工具不算任何模块（仍记「聊天」）
+  assert.equal(usage.moduleOfTool('qq_send_message'), '')
+  assert.equal(usage.moduleOfTool('qq_chat_history'), '')
+  assert.equal(usage.moduleOfTool('home_where'), '', '认不出的工具不算模块')
+  assert.equal(usage.moduleOfTool(''), '')
+  assert.equal(usage.moduleOfTool(null), '')
+})
